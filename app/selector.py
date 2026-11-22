@@ -124,6 +124,7 @@ STAGE = os.environ.get("BR_STAGE", "1")
 # The stage estimates use the machine that produced its map. On the scorer,
 # the successful stage check was cheaper than scheduling the complete test.
 STAGE_GAIN = float(os.environ.get("BR_STAGE_GAIN", "1.7"))
+STAGE_PRECHECK = os.environ.get("BR_STAGE_PRECHECK", "auto")
 STAGE_STATE_SECONDS = 0.6  # the snapshots of the module state for a check that proves a pass
 TEST_TIMEOUT = 4.0  # a test that runs longer than this (and 25 times its usual time) counts as hung
 SETUP_TIMEOUT = 6.0  # a child whose imports take longer than this is stopped
@@ -2559,7 +2560,17 @@ def run_stage_check(plan: Plan, tests, started, keeps, seen, broken, forced, set
         results = []
         reduce.STATE.task_hook = check.run_task
         try:
-            if check.probe(case):
+            # An early probe helps when failures nearby suggest that the long
+            # test will fail too. With no such evidence, its first task would
+            # be run again after a successful probe, so go straight to the
+            # test and retain all of the same checks for its verdict.
+            nearby_failure = any(bad is True and t in st["deciders"] for t, bad in seen.items())
+            if STAGE_PRECHECK == "auto":
+                probe = nearby_failure
+            else:
+                probe = STAGE_PRECHECK != "never"
+            info["precheck"] = probe
+            if not probe or check.probe(case):
                 runner.run_tests([(n, test_id)], lambda number, failed: results.append(failed), False, keeps)
             else:
                 results.append(False)  # (over: no verdict below)

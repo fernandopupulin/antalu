@@ -487,8 +487,9 @@ def code_alias(pairs):
     stack = list(pairs)
     while stack:
         old, new = stack.pop()
-        if f.code(new) != f.code(old):
-            alias[f.code(new)] = f.code(old)
+        new_hash, old_hash = f.code(new), f.code(old)
+        if new_hash != old_hash:
+            alias[new_hash] = old_hash
         oc = [k for k in old.co_consts if isinstance(k, types.CodeType)]
         nc = [k for k in new.co_consts if isinstance(k, types.CodeType)]
         if len(oc) == len(nc):
