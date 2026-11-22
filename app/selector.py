@@ -95,7 +95,7 @@ FRESH_REDUCE = os.environ.get("BR_FRESH_REDUCE", "1") == "1"
 NO_CLASSMAP = os.environ.get("BR_NO_CLASSMAP") == "1"  # validation: no cut by the class attribute map
 NO_KEYMAP = os.environ.get("BR_NO_KEYMAP") == "1" or keymap is None  # validation: no key map cut (keymap.py)
 TIGHT = os.environ.get("BR_NO_TIGHT") != "1"  # exact line sets of the long tests (maps/tight_lines.bin)
-TOKCHECK = os.environ.get("BR_NO_TOKCHECK") != "1"  # token streams of the long tests' inputs (tokcheck.py)
+TOKCHECK = os.environ.get("BR_NO_TOKCHECK", "1") == "0"  # opt in to rechecking token streams
 TOKCHECK_SECONDS = 2.0  # CPU limit of that check; inputs left unchecked count as changed
 # files whose code runs inside Tokenizer.tokenize (with the trie of the keywords)
 TOKENIZER_FILES = frozenset(("sqlglot/tokens.py", "sqlglot/tokenizer_core.py", "sqlglot/trie.py", "sqlglot/jsonpath.py"))
