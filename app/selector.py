@@ -2559,16 +2559,18 @@ def run_stage_check(plan: Plan, tests, started, keeps, seen, broken, forced, set
             return
         results = []
         reduce.STATE.task_hook = check.run_task
-        restore_executor = None
         try:
             # Keep the executor untouched when the patch can change its implementation.
             # Only the late work of this stage verification needs the projection fast path.
             if (os.environ.get("BR_TPC_FUSE", "1") == "1" and plan.files
                     and all(path.startswith("sqlglot/optimizer/") for path in plan.files)
                     and not hasattr(check, "report")):
-                import tuple_eval
+                def prepare_executor():
+                    import tuple_eval
 
-                restore_executor = tuple_eval.install()
+                    return tuple_eval.install()
+
+                check.prepare_executor = prepare_executor
             # An early probe helps when failures nearby suggest that the long
             # test will fail too. With no such evidence, its first task would
             # be run again after a successful probe, so go straight to the
@@ -2585,8 +2587,6 @@ def run_stage_check(plan: Plan, tests, started, keeps, seen, broken, forced, set
                 results.append(False)  # (over: no verdict below)
         finally:
             reduce.STATE.task_hook = None
-            if restore_executor is not None:
-                restore_executor()
             check.remove()
             signal.setitimer(signal.ITIMER_PROF, 0)  # (started() set the CPU limit of the check)
         info["t_run"] = round(time.process_time() - t0, 3)

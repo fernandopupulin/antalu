@@ -2,6 +2,7 @@
 
 import ast
 from itertools import product
+from math import inf
 import types
 
 
@@ -95,6 +96,7 @@ def install():
     generate_tuple = PythonExecutor.generate_tuple
     eval_tuple = Context.eval_tuple
     hash_join = PythonExecutor.hash_join
+    project_and_filter = PythonExecutor._project_and_filter
     programs = {}
 
     def generate(self, expressions):
@@ -107,6 +109,8 @@ def install():
         return result
 
     def evaluate(self, codes):
+        if type(self) is Context and type(codes) is tuple and len(codes) == 1:
+            return (self.eval(codes[0]),)
         if type(self) is Context and type(codes) is _Projection:
             if codes.program is not None:
                 return eval(codes.program, self.env)
@@ -175,12 +179,37 @@ def install():
                     append(source_row + join_row)
         return table
 
+    def project_unlimited(self, context, step, table_iter):
+        if (type(self) is not PythonExecutor or type(context) is not Context
+                or type(step.limit) is not float or step.limit != inf or type(step.offset) is not int):
+            return project_and_filter(self, context, step, table_iter)
+
+        # A finite sink size cannot reach an infinite limit. Hoist the condition
+        # and projection dispatch out of the row loop on this path only.
+        sink = self.table(step.projections if step.projections else context.columns)
+        condition = self.generate(step.condition)
+        projections = self.generate_tuple(step.projections)
+        append = sink.append
+        if condition:
+            evaluate_condition = context.eval
+            table_iter = (reader for reader in table_iter if evaluate_condition(condition))
+        if projections:
+            evaluate_projection = context.eval_tuple
+            for _ in table_iter:
+                append(evaluate_projection(projections))
+        else:
+            for reader in table_iter:
+                append(reader.row)
+        return sink
+
     PythonExecutor.generate_tuple = generate
     PythonExecutor.hash_join = inner_join
+    PythonExecutor._project_and_filter = project_unlimited
     Context.eval_tuple = evaluate
 
     def restore():
         Context.eval_tuple = eval_tuple
+        PythonExecutor._project_and_filter = project_and_filter
         PythonExecutor.hash_join = hash_join
         PythonExecutor.generate_tuple = generate_tuple
 

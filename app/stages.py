@@ -249,6 +249,8 @@ class StageCheck:
         self.real = None
         self.cls = None
         self.helper = None
+        self.prepare_executor = None
+        self.restore_executor = None
 
     # -- the two names that execute() looks up in its module, and the test's comparison ----
 
@@ -293,6 +295,9 @@ class StageCheck:
         return True
 
     def remove(self):
+        if self.restore_executor is not None:
+            self.restore_executor()
+            self.restore_executor = None
         if self.globals is not None:
             self.globals["Plan"], self.globals["PythonExecutor"] = self.real
             self.cls.subtestHelper = self.helper
@@ -331,6 +336,12 @@ class StageCheck:
             return "tables"
         return None
 
+    def execute_plan(self, executor, args, kwargs, plan):
+        if self.prepare_executor is not None:
+            prepare, self.prepare_executor = self.prepare_executor, None
+            self.restore_executor = prepare()
+        return executor(*args, **kwargs).execute(plan)
+
     def at_executor(self, args, kwargs, plan_input):
         plan, executor = self.real
         index = self.task
@@ -344,7 +355,7 @@ class StageCheck:
                 self.ran.append((index, "call"))
                 self.seq.append("d")
                 self.task = None
-            return executor(*args, **kwargs).execute(plan_input)
+            return self.execute_plan(executor, args, kwargs, plan_input)
         what = self.compare(index, args, kwargs, plan_input)
         if what is None:
             self.same.append(index)
@@ -358,7 +369,7 @@ class StageCheck:
         self.ran.append((index, what))
         self.seq.append("d")
         self.task = None
-        return executor(*args, **kwargs).execute(plan(plan_input.expression))
+        return self.execute_plan(executor, args, kwargs, plan(plan_input.expression))
 
     def on_result(self, index, table):
         """The test received the rows of a task that ran to its end. True: the comparison
