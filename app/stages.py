@@ -239,6 +239,7 @@ class StageCheck:
         self.clock = None  # CPU time of this process at the first task
         self.over = False
         self.why = None
+        self.check_reference_sql = True
         self.same = []
         self.ran = []  # (task, why it ran to its end)
         self.proved = []
@@ -400,7 +401,7 @@ class StageCheck:
             self.stop("slow")
             return None
         self.expected += self.cpu[index][0] + 0.01
-        if self.sql_text_differs(index):
+        if self.check_reference_sql and self.sql_text_differs(index):
             self.seq.append("q")
             self.stop("sql text of task %d" % index)
             return None

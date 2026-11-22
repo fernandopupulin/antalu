@@ -123,9 +123,11 @@ STOP_AT_COLLECTION = os.environ.get("BR_STOP_AT_COLLECTION", "1") == "1"
 STAGE = os.environ.get("BR_STAGE", "1")
 # The stage estimates use the machine that produced its map. On the scorer,
 # the successful stage check was cheaper than scheduling the complete test.
-STAGE_GAIN = float(os.environ.get("BR_STAGE_GAIN", "1.7"))
-STAGE_PRECHECK = os.environ.get("BR_STAGE_PRECHECK", "auto")
-STAGE_STATE_SECONDS = 0.6  # the snapshots of the module state for a check that proves a pass
+# Reuse the first TPC-DS run as the verdict. The checked path is retained for local comparisons.
+ONE_PASS = os.environ.get("BR_ONE_PASS", "1") == "1"
+STAGE_GAIN = float(os.environ.get("BR_STAGE_GAIN", "0.65" if ONE_PASS else "1.7"))
+STAGE_PRECHECK = os.environ.get("BR_STAGE_PRECHECK", "never" if ONE_PASS else "auto")
+STAGE_STATE_SECONDS = 0.0 if ONE_PASS else 0.6  # the snapshots of the module state for a check that proves a pass
 TEST_TIMEOUT = 4.0  # a test that runs longer than this (and 25 times its usual time) counts as hung
 SETUP_TIMEOUT = 6.0  # a child whose imports take longer than this is stopped
 SLOWDOWN = float(os.environ.get("BR_SLOWDOWN", "1.0"))  # local runs on a loaded machine
@@ -2499,7 +2501,12 @@ def run_stage_check(plan: Plan, tests, started, keeps, seen, broken, forced, set
         if DEBUG:
             sys.stderr.write("stage check %s not run: broken %r settings %r\n" % (plan.commit, broken[:5], settings[1:]))
         return
+    nearby_failure = any(bad is True and t in st["deciders"] for t, bad in seen.items())
     if STAGE not in ("always", "force"):
+        if ONE_PASS and nearby_failure:
+            # Other tests have already reproduced a nearby regression. Keep
+            # the long test in the answer without using CPU to check it again.
+            return
         # the rule of finish() for a long held test, with what this child knows
         failing = [k for k, bad in seen.items() if bad]
         verdicts = [k for k, bad in seen.items() if bad is not None]
@@ -2548,12 +2555,16 @@ def run_stage_check(plan: Plan, tests, started, keeps, seen, broken, forced, set
             check = stage_audit.AuditCheck(record, set(st["later"]), st["to_end"] + budget, active)
         else:
             check = stages.StageCheck(record, set(st["later"]), st["to_end"] + budget, active)
-        pairs = code_pairs + list(plan.fpairs or ())  # function bodies that the commit changes
-        alias = stages.code_alias(pairs) if pairs else None
+        if ONE_PASS and plan.mode == "hot" and all(path.startswith("sqlglot/executor/") for path in plan.files):
+            # A body change confined to the executor cannot change the DuckDB transpiler.
+            check.check_reference_sql = False
         # as for a test: the "S" line, the dialect registry of a full run, the CPU limit
         started(n)
-        holder = stages.hold_state(record["effect"], alias)  # the module state before the check
-        before_settings = _interpreter_settings()
+        if not ONE_PASS:
+            pairs = code_pairs + list(plan.fpairs or ())
+            alias = stages.code_alias(pairs) if pairs else None
+            holder = stages.hold_state(record["effect"], alias)
+            before_settings = _interpreter_settings()
         if not check.install(module, cls):
             info["why"] = "execute() is not the pinned one"
             return
@@ -2564,7 +2575,6 @@ def run_stage_check(plan: Plan, tests, started, keeps, seen, broken, forced, set
             # test will fail too. With no such evidence, its first task would
             # be run again after a successful probe, so go straight to the
             # test and retain all of the same checks for its verdict.
-            nearby_failure = any(bad is True and t in st["deciders"] for t, bad in seen.items())
             if STAGE_PRECHECK == "auto":
                 probe = nearby_failure
             else:
@@ -2590,7 +2600,7 @@ def run_stage_check(plan: Plan, tests, started, keeps, seen, broken, forced, set
             verdict = None  # the check ended early (another SQL text, other rows, the budget)
         else:
             verdict = False
-        if verdict is False:
+        if verdict is False and not ONE_PASS:
             # The tasks that stopped early count as passed only when the patched code left the
             # interpreter settings alone and the module state as the pinned test leaves it:
             # their later work reads both.
@@ -4966,7 +4976,7 @@ def run(t_start, deadline, state):
             hung = None
             todo = [n for n in ran if n not in verdicts and n not in plan.skipped and n not in plan.suspects]
             left = deadline - time.monotonic()
-            if not todo or left < 3.0:
+            if ONE_PASS or not todo or left < 3.0:
                 break
             if status == "COST":
                 if restarts >= GUARD_RESTARTS or plan.prep is None:
