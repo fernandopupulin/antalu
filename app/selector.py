@@ -121,9 +121,9 @@ STOP_AT_COLLECTION = os.environ.get("BR_STOP_AT_COLLECTION", "1") == "1"
 # test without a run: "1" on, "0" off. For validation: "always" = whenever the test is held,
 # "force" = the test is always held and checked.
 STAGE = os.environ.get("BR_STAGE", "1")
-# A speculative stage check spends CPU even when it cannot prove a pass.
-# Budget 0.4 estimated CPU seconds for each second it could save in the worker schedule.
-STAGE_GAIN = float(os.environ.get("BR_STAGE_GAIN", "0.4"))
+# The stage estimates use the machine that produced its map. On the scorer,
+# the successful stage check was cheaper than scheduling the complete test.
+STAGE_GAIN = float(os.environ.get("BR_STAGE_GAIN", "1.7"))
 STAGE_STATE_SECONDS = 0.6  # the snapshots of the module state for a check that proves a pass
 TEST_TIMEOUT = 4.0  # a test that runs longer than this (and 25 times its usual time) counts as hung
 SETUP_TIMEOUT = 6.0  # a child whose imports take longer than this is stopped
@@ -3968,6 +3968,39 @@ def packed_bound(total, longest):
     return min(max(longest, total / k) + WORKER_COST * k for k in range(1, 9))
 
 
+def improve_two_workers(groups, seconds):
+    """Refine a short final schedule with an exact two-worker split in scorer milliseconds."""
+    items = [(n, round(seconds[n] * 1000)) for group in groups for n in group]
+    if len(items) < 3 or len(items) > 64:
+        return groups
+    lengths = dict(items)
+    total = sum(lengths.values())
+    half = total // 2
+    if half > 40000:
+        return groups
+    fee = round(WORKER_COST * 1000)
+    best = max(sum(lengths[n] for n in group) for group in groups) + len(groups) * fee
+    if max(max(lengths.values()), total - half) + 2 * fee >= best:
+        return groups
+    mask = (1 << (half + 1)) - 1
+    reachable = [1]
+    for _, duration in items:
+        choices = reachable[-1]
+        reachable.append((choices | (choices << duration)) & mask)
+    target = reachable[-1].bit_length() - 1
+    if total - target + 2 * fee >= best:
+        return groups
+    first, second = [], []
+    for idx in range(len(items) - 1, -1, -1):
+        n, duration = items[idx]
+        if (reachable[idx] >> target) & 1:
+            second.append(n)
+        else:
+            first.append(n)
+            target -= duration
+    return [sorted(first), sorted(second)]
+
+
 def packed_seconds(numbers, seconds):
     """What a selection costs: the largest worker load of pack() plus 2 s per worker."""
     bins = pack(sorted(numbers), seconds)
@@ -4407,7 +4440,7 @@ def run(t_start, deadline, state):
             if unimportable and status == "END" and not plan.all_fail and "import does not end" not in plan.note:
                 plan.note.append("collection stops: %d tests of files that do not import (of %d)" % (len(unimportable), len(selected)))
                 selected = unimportable
-        answers[c] = pack(sorted(selected), seconds)
+        answers[c] = improve_two_workers(pack(sorted(selected), seconds), seconds)
         if DEBUG:
             debug_rows[c] = {
                 "mode": plan.mode, "status": status, "cands": sorted(plan.cands), "cpu": round(sum(os.times()[:4]), 3),
