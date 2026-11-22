@@ -242,12 +242,12 @@ def _entry_key(item):
 
 
 def changed_entries(name, read_old):
-    """Entries of the patched fixture file 'name' that the pinned file does not have.
+    """Positions with changed values in a parsed fixture.
 
     read_old: context manager under which open() sees the pinned file. Returns
     {("p", name): set, ("x", name): set}, or {} when the file cannot be compared (then every
-    entry runs). An entry that is equal to a pinned entry gives the pinned result, and all
-    tests pass on the pinned commit, so only new entries can make a test fail."""
+    entry runs). Keep the entire fixture when its length changes. For the same length,
+    compare by position to detect moved and repeated cases."""
     helpers = sys.modules.get("tests.helpers")
     out = {}
     if helpers is None or getattr(helpers, "_br_state", None) is None:
@@ -256,8 +256,11 @@ def changed_entries(name, read_old):
         try:
             new = [_entry_key(e) for e in fn(name)]
             with read_old():
-                old = {_entry_key(e) for e in fn(name)}
-            out[(kind, name)] = {i for i, e in enumerate(new) if e not in old}
+                old = [_entry_key(e) for e in fn(name)]
+            out[(kind, name)] = (
+                set(range(len(new))) if len(old) != len(new)
+                else {i for i, (before, after) in enumerate(zip(old, new)) if before != after}
+            )
         except Exception:  # noqa: BLE001  (a malformed file: the full test must run and fail)
             continue
     return out

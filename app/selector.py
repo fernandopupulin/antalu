@@ -113,7 +113,6 @@ CLASS_SETUP_SECONDS = {"tests/test_executor.py::TestExecutor": 1.0} if os.enviro
 HOLD_FACTOR = float(os.environ.get("BR_HOLD_FACTOR", "0.7"))
 QUIET_HOLD_SECONDS = float(os.environ.get("BR_QUIET_HOLD", "5.0"))
 AFTER_FAIL_RATIO = float(os.environ.get("BR_AFTER_FAIL", "0.5"))
-MANY_FAILURES = 8  # with this many failing tests, a long test on the same code is selected too
 # A plain pytest run stops at collection when a test file cannot be imported (see finish()).
 # BR_STOP_AT_COLLECTION=0: such a commit also gets the tests that fail when they run.
 STOP_AT_COLLECTION = os.environ.get("BR_STOP_AT_COLLECTION", "1") == "1"
@@ -127,7 +126,7 @@ STAGE = os.environ.get("BR_STAGE", "1")
 ONE_PASS = os.environ.get("BR_ONE_PASS", "1") == "1"
 STAGE_GAIN = float(os.environ.get("BR_STAGE_GAIN", "0.65" if ONE_PASS else "1.7"))
 STAGE_PRECHECK = os.environ.get("BR_STAGE_PRECHECK", "never" if ONE_PASS else "auto")
-STAGE_STATE_SECONDS = 0.0 if ONE_PASS else 0.6  # the snapshots of the module state for a check that proves a pass
+STAGE_STATE_SECONDS = 0.6  # the snapshots of the module state for a check that proves a pass
 TEST_TIMEOUT = 4.0  # a test that runs longer than this (and 25 times its usual time) counts as hung
 SETUP_TIMEOUT = 6.0  # a child whose imports take longer than this is stopped
 SLOWDOWN = float(os.environ.get("BR_SLOWDOWN", "1.0"))  # local runs on a loaded machine
@@ -154,7 +153,7 @@ RESTART_SECONDS = {"hot": 0.05, "fresh_cone": 0.5, "fresh": 1.5, "fresh_purge": 
 CPU_PRICE = float(os.environ.get("BR_CPU_PRICE", "0.8"))
 # Hold rule by packed cost (marginal_holds in run): a test that would run is held when the
 # CPU of the runs costs more than the selection of the tests costs inside the answer.
-MARGINAL = os.environ.get("BR_MARGINAL") == "1"
+MARGINAL = os.environ.get("BR_MARGINAL", "1") == "1"
 # Names of interpreter-wide settings (the ones that _interpreter_settings compares after each
 # test). A run is what shows that a test leaves such a setting changed for the later tests. So
 # marginal_holds holds no test of a commit whose added lines name one, and no test whose own
@@ -737,7 +736,7 @@ def _header_changed(old_lines, s, e, groups):
     return any(s <= o + i <= end for o, nr, *_ in groups for i in range(max(nr, 1)))
 
 
-def plan_python_file(plan: Plan, fp, maps: Maps, old_text: str):
+def plan_python_file(plan: Plan, fp, maps: Maps, old_text: str, *, single_file=True):
     """Classifies the edit of one known .py file. Returns True when a fresh import is needed."""
     rel = fp.old_path
     rec = maps.file(rel)
@@ -802,7 +801,7 @@ def plan_python_file(plan: Plan, fp, maps: Maps, old_text: str):
         pairs = []
         if not engine.deftime_equal(a, b, pairs):
             pairs = []
-            if patchrules.tests_read_docs(maps) or not patchrules.equal_but_doc(a, b, pairs):
+            if not single_file or patchrules.tests_read_docs(maps) or not patchrules.equal_but_doc(a, b, pairs):
                 return True
             plan.note.append("docstring only")
         if all(engine.func_code_equal(x, y) for x, y in pairs):
@@ -1411,6 +1410,8 @@ def make_plan(commit, text, maps: Maps, use_infect=INFECT) -> Plan:
     infect_used = []  # files planned with the operand outcome map
     marks = []  # what the plan held before each file
     fps = engine.parse_patch(text)
+    single_file = len(fps) == 1
+    use_infect = use_infect and single_file
     plan.settings = any(
         line.startswith("+") and not line.startswith("+++") and any(word in line for word in SETTINGS_WORDS)
         for line in text.splitlines()
@@ -1523,7 +1524,7 @@ def make_plan(commit, text, maps: Maps, use_infect=INFECT) -> Plan:
                     plan.cands.update(maps.tests(rec[8]))
             elif fp.status == "modify" and (n_fp := len(plan.fpairs)) >= 0 and (
                 plan_python_file_infect(plan, fp, maps, old_text, infect_used) if use_infect
-                else plan_python_file(plan, fp, maps, old_text)
+                else plan_python_file(plan, fp, maps, old_text, single_file=single_file)
             ):
                 fresh = True
                 swap_candidate(plan, fp, maps, old_text, plan.fpairs[n_fp:])
@@ -1943,7 +1944,7 @@ def compute_keeps(plan: Plan, maps: Maps, tests):
     # reduce.scale_lines checks that the test's text is the pinned one (else the whole test
     # runs and its time limit decides).
     for n in plan.cands:
-        if tests[n]["id"] in SCALED_IDS:
+        if tests[n]["id"] in SCALED_IDS and tests[n]["file"] not in plan.files:
             keeps[n] = (None, None, None, True, None)
     if any(p.startswith("tests/") and p.endswith(".py") for p in plan.files):
         return keeps
@@ -1952,6 +1953,12 @@ def compute_keeps(plan: Plan, maps: Maps, tests):
     if plan.watch:
         return keeps  # whole runs: a part of a test can leave out a write to a watched container
     code_lines = [(rel, ln) for rel, lines in plan.lines.items() for ln in lines]
+    without_units = set()
+    for rel, ln in code_lines:
+        file_record = maps.file(rel)
+        if file_record is not None and 0 <= ln < len(file_record[3]):
+            mapped_units = maps.unit_entries(rel, ln)
+            without_units.update(n for n in maps.tests(file_record[3][ln]) if n not in mapped_units)
     fixtures = {}
     for p in plan.files:
         if p.startswith("tests/fixtures/"):
@@ -1959,7 +1966,7 @@ def compute_keeps(plan: Plan, maps: Maps, tests):
             fixtures[p[len("tests/fixtures/"):]] = set(maps.tests(sid)) if sid else set()
     for n in plan.cands:
         trec = maps.test_units(n)
-        if trec is None:
+        if trec is None or n in without_units:
             continue
         stmts, units, patterns = trec[2], trec[3], trec[4]
         unit_classes = trec[8] if len(trec) > 8 else None
@@ -2486,13 +2493,12 @@ def run_tokcheck(numbers, wfd):
     return found
 
 
-def run_stage_check(plan: Plan, tests, started, keeps, seen, broken, forced, settings, code_pairs, wfd):
+def run_stage_check(plan: Plan, tests, started, keeps, seen, broken, settings, code_pairs, wfd):
     """Child side, after the commit's other runs: the stage check of the held long test
     (stages.py), when the parent would select that test without a run. It reports what it
     found in an "X" line; the parent drops the test only on the verdict "passes".
     seen: the verdicts that this child reported; broken: the modules that do not import here;
-    forced: held tests that are selected whatever the verdicts are; code_pairs: (old code,
-    new code) of the function bodies that this child replaced."""
+    code_pairs: (old code, new code) of the function bodies that this child replaced."""
     st = plan.stage
     n = st["n"]
     if broken or settings[1] or settings[2]:
@@ -2502,19 +2508,9 @@ def run_stage_check(plan: Plan, tests, started, keeps, seen, broken, forced, set
             sys.stderr.write("stage check %s not run: broken %r settings %r\n" % (plan.commit, broken[:5], settings[1:]))
         return
     nearby_failure = any(bad is True and t in st["deciders"] for t, bad in seen.items())
-    if STAGE not in ("always", "force"):
-        if ONE_PASS and nearby_failure:
-            # Other tests have already reproduced a nearby regression. Keep
-            # the long test in the answer without using CPU to check it again.
-            return
-        # the rule of finish() for a long held test, with what this child knows
-        failing = [k for k, bad in seen.items() if bad]
-        verdicts = [k for k, bad in seen.items() if bad is not None]
-        wanted = st["forced"] or n in forced
-        if not wanted and not (st["inert"] and not failing):
-            wanted = not verdicts or len(failing) + st["more"] >= MANY_FAILURES or any(k in st["deciders"] for k in failing)
-        if not wanted:
-            return
+    if ONE_PASS and nearby_failure and STAGE not in ("always", "force"):
+        # Keep the long test when related checks already found a regression.
+        return
     # What the check can save: the seconds that the test adds to the answer of this commit,
     # next to the tests that are selected in any case (the failing tests, the tests that did
     # not run after a failure, the other held tests). The check may cost STAGE_GAIN CPU
@@ -2560,11 +2556,10 @@ def run_stage_check(plan: Plan, tests, started, keeps, seen, broken, forced, set
             check.check_reference_sql = False
         # as for a test: the "S" line, the dialect registry of a full run, the CPU limit
         started(n)
-        if not ONE_PASS:
-            pairs = code_pairs + list(plan.fpairs or ())
-            alias = stages.code_alias(pairs) if pairs else None
-            holder = stages.hold_state(record["effect"], alias)
-            before_settings = _interpreter_settings()
+        pairs = code_pairs + list(plan.fpairs or ())
+        alias = stages.code_alias(pairs) if pairs else None
+        holder = stages.hold_state(record["effect"], alias)
+        before_settings = _interpreter_settings()
         if not check.install(module, cls):
             info["why"] = "execute() is not the pinned one"
             return
@@ -2600,7 +2595,7 @@ def run_stage_check(plan: Plan, tests, started, keeps, seen, broken, forced, set
             verdict = None  # the check ended early (another SQL text, other rows, the budget)
         else:
             verdict = False
-        if verdict is False and not ONE_PASS:
+        if verdict is False:
             # The tasks that stopped early count as passed only when the patched code left the
             # interpreter settings alone and the module state as the pinned test leaves it:
             # their later work reads both.
@@ -3021,7 +3016,7 @@ def child_main(plan: Plan, order, tests, wfd, index, skip_after_fail, plan_fd=No
         if plan.added and plan.mode in ("fresh", "fresh_purge"):
             run_added_tests(plan.added, wfd)
         if plan.stage is not None:
-            run_stage_check(plan, tests, started, keeps, seen, broken_here, forced, settings, code_pairs, wfd)
+            run_stage_check(plan, tests, started, keeps, seen, broken_here, settings, code_pairs, wfd)
         if DEBUG:
             sys.stderr.write("child %s setup %.3f run %.3f\n" % (plan.commit, t_setup - t_child, time.process_time() - t_setup))
             if "lazymods" in sys.modules:
@@ -3956,78 +3951,105 @@ def estimate_cost(n, plan: Plan, maps: Maps, seconds):
 # Packing
 
 
-def pack(numbers, seconds):
-    """Splits tests over 1..8 workers to minimise (largest load + 2 s per worker)."""
+def pack(numbers, seconds, refine=False):
+    """Distribute candidates in integer milliseconds, optionally tightening the final plan."""
     if not numbers:
         return []
-    items = sorted(numbers, key=lambda n: -seconds[n])
-    timed_items = [(n, seconds[n]) for n in items]
-    longest = timed_items[0][1]
-    best = None
-    for k in range(1, min(8, len(items)) + 1):
-        fee = WORKER_COST * k
-        if best is not None and longest + fee >= best[0] - 1e-9:
-            break
-        loads = [0.0] * k
-        bins = [[] for _ in range(k)]
-        for n, duration in timed_items:
-            i = loads.index(min(loads))
-            loads[i] += duration
-            bins[i].append(n)
-        cost = max(loads) + fee
-        if best is None or cost < best[0] - 1e-9:
-            best = (cost, bins)
-    return best[1]
-
-
-def packed_bound(total, longest):
-    """The least that a selection can cost: with k workers the largest load is at least the
-    longest test and at least total / k. For many short tests pack() comes close to it, and
-    it needs no list of tests (marginal_holds asks it once per candidate)."""
-    if total <= 0.0:
-        return 0.0
-    return min(max(longest, total / k) + WORKER_COST * k for k in range(1, 9))
-
-
-def improve_two_workers(groups, seconds):
-    """Refine a short final schedule with an exact two-worker split in scorer milliseconds."""
-    items = [(n, round(seconds[n] * 1000)) for group in groups for n in group]
-    if len(items) < 3 or len(items) > 64:
-        return groups
-    lengths = dict(items)
-    total = sum(lengths.values())
-    half = total // 2
-    if half > 40000:
-        return groups
+    durations = {n: round(seconds[n] * 1000) for n in numbers}
+    items = sorted(durations, key=lambda n: (-durations[n], n))
+    total, longest = sum(durations.values()), durations[items[0]]
     fee = round(WORKER_COST * 1000)
-    best = max(sum(lengths[n] for n in group) for group in groups) + len(groups) * fee
-    if max(max(lengths.values()), total - half) + 2 * fee >= best:
-        return groups
-    mask = (1 << (half + 1)) - 1
-    reachable = [1]
-    for _, duration in items:
-        choices = reachable[-1]
-        reachable.append((choices | (choices << duration)) & mask)
-    target = reachable[-1].bit_length() - 1
-    if total - target + 2 * fee >= best:
-        return groups
-    first, second = [], []
-    for idx in range(len(items) - 1, -1, -1):
-        n, duration = items[idx]
-        if (reachable[idx] >> target) & 1:
-            second.append(n)
-        else:
-            first.append(n)
-            target -= duration
-    return [sorted(first), sorted(second)]
+    best, groups = total + fee, [items]
+    nodes = 1024
+
+    def fit(index):
+        nonlocal nodes
+        if index == len(items):
+            return True
+        if nodes == 0:
+            return False
+        nodes -= 1
+        item = items[index]
+        duration = durations[item]
+        tried = set()
+        for worker, load in enumerate(loads):
+            if load in tried or load + duration > target:
+                continue
+            tried.add(load)
+            loads[worker] += duration
+            bins[worker].append(item)
+            if fit(index + 1):
+                return True
+            loads[worker] = load
+            bins[worker].pop()
+            if nodes == 0:
+                return False
+        return False
+
+    for count in range(2, min(8, len(items)) + 1):
+        lower = max(longest, (total + count - 1) // count)
+        if lower + count * fee >= best:
+            continue
+        loads, bins = [0] * count, [[] for _ in range(count)]
+        for i, n in enumerate(items):
+            worker = i if i < count else loads.index(min(loads))
+            loads[worker] += durations[n]
+            bins[worker].append(n)
+        if refine and max(loads) > lower:
+            balance_workers(bins, loads, durations, lower)
+        cost = max(loads) + count * fee
+        if cost < best:
+            best, groups = cost, bins
+        if not refine or len(items) > 36:
+            continue
+        upper = best - count * fee - 1
+        while lower <= upper and nodes:
+            target = (upper + lower) // 2
+            loads, bins = [0] * count, [[] for _ in range(count)]
+            if fit(0):
+                groups = [group for group in bins if group]
+                best = max(loads) + len(groups) * fee
+                upper = best - count * fee - 1
+            else:
+                lower = target + 1
+    return groups
+
+
+def balance_workers(bins, loads, durations, lower):
+    """Try bounded moves or swaps between the most and least loaded workers."""
+    for _ in range(4):
+        heavy = loads.index(max(loads))
+        light = loads.index(min(loads))
+        if loads[heavy] <= lower or len(bins[heavy]) < 2:
+            return
+        other_load = max((v for i, v in enumerate(loads) if i not in (heavy, light)), default=0)
+        best = loads[heavy]
+        change = None
+        for item in bins[heavy][:12]:
+            for exchange in [None, *bins[light][:12]]:
+                weight = durations[item] - (durations[exchange] if exchange is not None else 0)
+                load = max(other_load, loads[heavy] - weight, loads[light] + weight)
+                if load < best:
+                    best, change = load, (item, exchange, weight)
+        if change is None:
+            return
+        item, exchange, weight = change
+        bins[heavy].remove(item)
+        bins[light].append(item)
+        if exchange is not None:
+            bins[light].remove(exchange)
+            bins[heavy].append(exchange)
+        loads[heavy] -= weight
+        loads[light] += weight
 
 
 def packed_seconds(numbers, seconds):
-    """What a selection costs: the largest worker load of pack() plus 2 s per worker."""
-    bins = pack(sorted(numbers), seconds)
+    """Estimate scheduled seconds using an actual greedy worker distribution."""
+    bins = pack(numbers, seconds)
     if not bins:
         return 0.0
-    return max(sum(seconds[n] for n in b) for b in bins) + WORKER_COST * len(bins)
+    millis = max(sum(round(seconds[n] * 1000) for n in group) for group in bins)
+    return millis / 1000 + WORKER_COST * len(bins)
 
 
 # ---------------------------------------------------------------------------
@@ -4182,10 +4204,8 @@ def main():
                 everything = pack(list(range(len(tests))), seconds)
             workers = everything
         if number is not None:
-            workers = [[number[n] for n in w if number[n] is not None] for w in workers]
-            workers = [w for w in workers if w]
-        if extra:
-            workers = [workers[0] + extra] + workers[1:] if workers else [list(extra)]
+            candidates = [number[n] for group in workers for n in group if number[n] is not None]
+            workers = pack(candidates + extra, state["manifest_seconds"], refine=True)
         out.append(json.dumps({"commit": c, "workers": workers}))
     data = ("\n".join(out) + "\n").encode() if out else b""
     while data:
@@ -4283,6 +4303,7 @@ def align_tests(tests, ids, state):
     known = set(ids)
     state["extra"] = [number for tid, (t, number) in given.items() if tid not in known]
     state["number"] = [given[tid][1] if tid in given else None for tid in ids]
+    state["manifest_seconds"] = {number: test["seconds"] for test, number in given.values()}
     return [
         dict(given[tid][0]) if tid in given else {"id": tid, "file": tid.split("::")[0], "seconds": 0.0}
         for tid in ids
@@ -4362,71 +4383,17 @@ def run(t_start, deadline, state):
             fixture_readers.setdefault(-1, set())
         return fixture_readers.get(n) or frozenset()
 
-    def long_by_evidence(evidence, held, more=0):
-        """The long held tests that the tests in evidence (failing tests) select: those of the
-        same test class or the same .sql fixture file, or all of them with many failures.
-        more: failing tests that may exist unseen (see marginal_holds)."""
-        fail_classes = {test_classes[n] for n in evidence}
-        fail_fixtures = set()
-        for n in evidence:
-            fail_fixtures.update(fixtures_of(n))
-        return {
-            n for n in held if seconds[n] > QUIET_HOLD_SECONDS and (
-                test_classes[n] in fail_classes or fail_fixtures & fixtures_of(n) or len(evidence) + more >= MANY_FAILURES)
-        }
-
     def finish(c, plan, verdicts, status, ran, held, blind=()):
-        failing = {n for n, bad in verdicts.items() if bad}
-        # tests that the CPU guard stopped (and tests left unrun after that) have no verdict:
-        # they are selected, and for every rule below they count like failing tests
         suspects = set(plan.suspects)
-        selected = set(failing)
-        selected.update(suspects)
-        failing = failing | suspects
-        blind_set = set(blind)
-        selected.update(blind_set)
-        selected.update(plan.blind)
-        unknown = [n for n in ran if n not in verdicts and n not in blind_set and n not in suspects]
-        if unknown:
-            selected.update(unknown)  # the child ended early: nothing is known about these
-        if plan.all_fail:
-            selected = set(all_tests)
-        # Tests that were too costly to run have no verdict. They are selected, with one
-        # exception: a very long test (the TPC-DS run, for instance) is left out unless a
-        # failing test is close to it (same test class, or same fixture file) or many tests fail.
-        # (the stage check, when it ran for a held long test: on "passes" the test is not held
-        # any more for the rules about verdicts and evidence; on "fails" it is selected)
+        selected = {n for n, bad in verdicts.items() if bad} | suspects | set(blind) | plan.blind
+        selected.update(n for n in ran if n not in verdicts)
         info = plan.stage_info
-        held_all = held
-        if info and info.get("verdict") is False and not plan.all_fail:
-            held = [n for n in held if n != info["n"]]
-        if "import state unchanged" in plan.note and not failing and not plan.broken and not unknown:
-            # the import left nothing different and the cheapest candidates pass; a held test
-            # that reads a data file of the patch (a fixture edited beside the code) can still
-            # fail, so it stays selected
-            selected.update(n for n in held if n in plan.data_cands)
-        elif plan.broken or not verdicts or unknown:
-            selected.update(held)
-        else:
-            # On labeled mutants, a long test fails together with another test of its class
-            # (or of its fixture file) in nearly every case, and almost never without one.
-            # The tests of its class did run (see protect below), so their verdicts decide.
-            selected.update(n for n in held if seconds[n] <= QUIET_HOLD_SECONDS)
-            # (with many failures: a commit that breaks this much can break any test)
-            # (one more failure is counted when marginal_holds held tests: the first failing
-            # test of the runs before that rule may be one of them)
-            selected.update(long_by_evidence(failing, held, 1 if plan.econ else 0))
-        # held tests that read changed test data directly (see test_data_candidates), or whose
-        # token streams changed (run_tokcheck)
-        selected.update(n for n in held if n in plan.must)
-        # long held tests whose own evaluations of the edited comparison change
-        selected.update(n for n in held if n in plan.sure_infected and seconds[n] > QUIET_HOLD_SECONDS)
-        # a test with a small-scale variant that did not run is selected: no evidence rule
-        # (neither the long-test rule nor "import state unchanged") drops it
-        selected.update(n for n in held if tests[n]["id"] in SCALED_IDS)
-        held = held_all
+        stage_pass = info["n"] if info and info.get("verdict") is False else None
+        selected.update(n for n in held if n != stage_pass or n in plan.data_cands)
         if info and info.get("verdict") is True:
             selected.add(info["n"])
+        if plan.all_fail:
+            selected = set(all_tests)
         if plan.watch:
             selected.update(watch_readers(plan, verdicts, len(tests)))
         if plan.global_leak is not None:
@@ -4461,7 +4428,7 @@ def run(t_start, deadline, state):
             if unimportable and status == "END" and not plan.all_fail and "import does not end" not in plan.note:
                 plan.note.append("collection stops: %d tests of files that do not import (of %d)" % (len(unimportable), len(selected)))
                 selected = unimportable
-        answers[c] = improve_two_workers(pack(sorted(selected), seconds), seconds)
+        answers[c] = pack(selected, seconds, refine=True)
         if DEBUG:
             debug_rows[c] = {
                 "mode": plan.mode, "status": status, "cands": sorted(plan.cands), "cpu": round(sum(os.times()[:4]), 3),
@@ -4578,28 +4545,7 @@ def run(t_start, deadline, state):
         return known
 
     def marginal_holds(plan, ran, held, cost):
-        """The tests of 'ran' that are held after all, because their runs cost more CPU than
-        their selection costs inside the answer of this commit.
-
-        The rule above prices each test alone: a run against its seconds and one more worker.
-        But the answer is packed (see pack), and it holds tests in any case: plan.blind and
-        the held tests that finish() selects. Beside those, one more test costs less than
-        alone, and nothing in the free time next to a longer test. So the candidates are
-        taken in the order of CPU per recorded second, the worst first, and the cut that
-        makes (CPU_PRICE * CPU of the runs + packed seconds of the selection) smallest is
-        taken, for the case that every run passes.
-
-        Only tests that today's rules already leave unrun after a first failure qualify (the
-        'skip' set of prepare_plan: cost above half the recorded seconds, not in
-        plan.protect). So after its first failure, a child still runs every test that it
-        ran before this rule, and finish() sees the same failing tests, except one: the
-        first failing test itself may now be a held one. finish() counts one more failure
-        for that (see long_by_evidence). Not held by this rule: a test longer than
-        QUIET_HOLD_SECONDS (finish() selects those by evidence only), a test with a
-        small-scale variant, a test that shares a class or a .sql fixture with a long held
-        test (its verdict is evidence for that test), and a test that uses a class-level
-        process pool (its run shows whether the pool dies), and a test whose test file names an
-        interpreter-wide setting (its run shows whether it leaves the setting changed)."""
+        """Compare the CPU saved by holding a prefix with its scheduled cost."""
         free = [
             n for n in ran
             if cost[n] > max(0.03, AFTER_FAIL_RATIO * seconds[n]) and n not in plan.protect
@@ -4621,29 +4567,18 @@ def run(t_start, deadline, state):
         ]
         if not free:
             return set()
-        # what the answer holds in any case (a long held test only when it is sure to be selected)
-        base = set(plan.blind)
-        base.update(
-            n for n in held
-            if seconds[n] <= QUIET_HOLD_SECONDS or n in plan.must or n in plan.sure_infected or tests[n]["id"] in SCALED_IDS
-        )
-        total = sum(seconds[n] for n in base)
-        longest = max((seconds[n] for n in base), default=0.0)
+        base = plan.blind | set(held)
         free.sort(key=lambda n: (-(cost[n] + 1e-4) / (seconds[n] + 1e-3), n))
         run_cost = sum(cost[n] for n in ran)
-        best, cut = CPU_PRICE * run_cost + packed_bound(total, longest), 0
-        for i, n in enumerate(free):
-            total += seconds[n]
-            longest = max(longest, seconds[n])
+        best, cut = CPU_PRICE * run_cost + packed_seconds(base, seconds), 0
+        # Bound the number of repacks, including for patches with suite-wide impact.
+        limit = min(24, len(free), len(ran) - 1)
+        for i, n in enumerate(free[:limit], 1):
+            base.add(n)
             run_cost -= cost[n]
-            value = CPU_PRICE * run_cost + packed_bound(total, longest)
+            value = CPU_PRICE * run_cost + packed_seconds(base, seconds)
             if value < best - 1e-9:
-                best, cut = value, i + 1
-        if cut == len(ran):
-            # One test always runs. Without any verdict, finish() selects every held test, the
-            # long ones too. And a run is what shows a change of interpreter-wide settings
-            # that the patched statement makes in every test that reaches it (see finish).
-            cut -= 1
+                best, cut = value, i
         return set(free[:cut])
 
     shared_info = []
@@ -4818,10 +4753,7 @@ def run(t_start, deadline, state):
                 "known": len(later) < len(tasks) or not tasks, "active": len(active),
                 "differ_most": sum(cpu[i][1] for i in active - later),  # when every other task runs on to its end
                 # the tests that finish() selects besides the failing ones, whatever the check says
-                "others": sorted(plan.blind | {k for k in held if k != n and (
-                    seconds[k] <= QUIET_HOLD_SECONDS or k in plan.must or tests[k]["id"] in SCALED_IDS)}),
-                "inert": "import state unchanged" in plan.note, "more": 1 if plan.econ else 0,
-                "forced": n in plan.must or n in plan.sure_infected,
+                "others": sorted(plan.blind | (set(held) - {n})),
                 # the tests whose failure selects this one in finish()
                 "deciders": {k for k in ran if tests[k]["id"].rsplit("::", 1)[0] == cls_id or fixtures & fixtures_of(k)},
             }
@@ -4932,9 +4864,8 @@ def run(t_start, deadline, state):
         if not todo:
             return [], set(), enders
         evidence = bad | plan.suspects
-        base = evidence | plan.blind | (plan.skipped & set(cost)) | {n for n in held if seconds[n] <= QUIET_HOLD_SECONDS}
-        base |= long_by_evidence(evidence, held)
-        unrun = base | set(todo) | long_by_evidence(evidence | set(todo), held)
+        base = evidence | plan.blind | (plan.skipped & set(cost)) | set(held)
+        unrun = base | set(todo)
         run_cost = RESTART_SECONDS.get(plan.mode, 1.5) + sum(cost.get(n, 0.0) for n in todo)
         if CPU_PRICE * run_cost >= packed_seconds(unrun, seconds) - packed_seconds(base, seconds):
             plan.suspects.update(todo)

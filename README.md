@@ -1,6 +1,6 @@
 # Seletor de testes
 
-For each code change to sqlglot (commit `eb11aec`), the program prints the tests that fail on it and a split across workers.
+For each code change to sqlglot (commit `eb11aec`), the program prints the selected test IDs in scorer numbering and a split across workers.
 
 ## Method in one paragraph
 
@@ -20,7 +20,8 @@ The program applies each patch in memory, runs the tests that can be affected, a
    - Importer cone (`app/cone.py`, `selector.cone_plan`). An import-time edit can touch only modules that `app/maps/cone.json` lists. Then the child imports again only the patched module and its importers (`cone.reimport`). The map lists a module only when this gave the same import state as a full import on the pinned tree. The child checks the patched code again and falls back to the full import when a check fails.
    - Fixture-only commits. Some commits change only entries of `.sql` fixture files (`fixture_only` in `run`). One shared child serves all of them in turn (`fixture_batch_child`). After each commit it restores the state and checks it (`shared_state_change`). A failed check ends the shared child, and the rest get their own children.
    - A test runs whole, or reduced to the statements, fixture entries and pool tasks that reach the changed code.
-4. **Select.** The program selects the failing tests. It packs the answer over up to 8 workers.
+4. **Select.** Failures and candidates without a usable verdict stay in the answer. A fixture slice is used only where the per-case map explains the affected lines. A stage check can clear a held test when its observed work and state checks complete.
+5. **Pack.** The selector charges the largest worker load plus the per-worker fee in integer milliseconds. It uses actual greedy assignments to decide when emission is cheaper than verification and tries a bounded partition search for small final selections.
 
 ## Cost controls
 
@@ -33,7 +34,7 @@ The program applies each patch in memory, runs the tests that can be affected, a
 
 - **Loop filter** (`app/iterred.py`, `app/maps/i/`). Some tests loop over many inputs in one statement. The map records, per loop pass of the pinned run, the lines that the pass runs. A reduced run keeps only the passes that reach the changed lines.
 - **Class route** (`app/classroute.py`, `app/maps/class_route.json`, `app/maps/import_exec.json`). An import-time edit can change only plain attributes of one class body. Then the child runs that class body again and sets the changed attributes, without a new import. The maps list the classes for which this gave the same import state on the pinned tree.
-- **Parent cost** (`app/rawz.py`, `app/rawmaps.py`, `app/astwalk.py`, `app/build_docs_read.py`). The image build stores the maps without compression and saves one fact about the pinned test files. The selector prepares the reduced test code once in the parent (`prepare_keeps`). One helper process serves the importer-cone commits.
+- **Parent cost** (`app/rawz.py`, `app/astwalk.py`, `app/build_docs_read.py`). The selector reads and decompresses coverage and fixture blocks on demand. The image build saves one fact about the pinned test files. The selector prepares the reduced test code once in the parent (`prepare_keeps`). One helper process serves the importer-cone commits.
 
 ## Rules for unusual patches
 
