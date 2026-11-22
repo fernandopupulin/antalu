@@ -1,5 +1,7 @@
 # Seletor de testes
 
+[Project origin, credits, license and use of AI](licenses/ATTRIBUTION.md)
+
 For each code change to sqlglot (commit `eb11aec`), the program prints the tests that fail on it and a split across workers.
 
 ## Method in one paragraph
@@ -95,12 +97,4 @@ The image build also writes the executor row cache, the DuckDB answer recording 
 | `app/*.py` | run-time modules (`engine`, `patchrules`, `infect`, `keymap`, `cone`, `statefp`, `stmtmap`, `reduce`, `runner`, `pool`, `preload`, `lazymods`, `duckreplay`, `tokcheck`) and build-time scripts (`build_exec_cache.py`, `build_duck_replay.py`, `build_base_state.py`) |
 | `app/maps/` | the maps |
 | `app/tools/` | the scripts that built the maps, with `infect2/`, `infect_hidden/`, `tight/` and `plugin/` |
-| `licenses/sample/`, `score.py`, `Makefile`, `SCORING.md` | the kit of the organizers, unchanged. `make sample` builds the image, runs it on the 30 sample commits, and scores the output |
-
-## Use of AI
-
-Antalos used OpenAI Codex to analyze selector performance, implement changes to TPC-DS query sampling, and validate those changes against labeled patches.
-
-## License
-
-See [license and attribution](licenses/).
+| `licenses/sample/`, `score.py`, `Makefile`, `SCORING.md` | competition starter kit. `make sample` builds the image, runs it on the 30 sample commits, and scores the output |
