@@ -123,7 +123,7 @@ STOP_AT_COLLECTION = os.environ.get("BR_STOP_AT_COLLECTION", "1") == "1"
 STAGE = os.environ.get("BR_STAGE", "1")
 # The stage estimates use the machine that produced its map. On the scorer,
 # the successful stage check was cheaper than scheduling the complete test.
-STAGE_GAIN = float(os.environ.get("BR_STAGE_GAIN", "1.7"))
+STAGE_GAIN = float(os.environ.get("BR_STAGE_GAIN", "1.0"))
 STAGE_PRECHECK = os.environ.get("BR_STAGE_PRECHECK", "auto")
 STAGE_STATE_SECONDS = 0.6  # the snapshots of the module state for a check that proves a pass
 TEST_TIMEOUT = 4.0  # a test that runs longer than this (and 25 times its usual time) counts as hung
@@ -2529,7 +2529,10 @@ def run_stage_check(plan: Plan, tests, started, keeps, seen, broken, forced, set
     import stages
 
     if GUARD and os.environ.get("BR_STAGE_AUDIT") != "1":
-        CPU_GUARD[n] = max(GUARD_MIN, min(1.5 * (st["est"] + min(budget, st["differ_most"])) + 3.0, STAGE_GAIN * saving + 1.0))  # (started() sets this limit; never more CPU than the check can save)
+        # This optional proof can save only the marginal scheduled cost of n.
+        # Ordinary tests keep their minimum timeout. This proof has a fallback.
+        estimated_limit = 1.5 * (st["est"] + min(budget, st["differ_most"])) + 3.0
+        CPU_GUARD[n] = max(0.001, min(estimated_limit, STAGE_GAIN * saving))
     os.write(wfd, b"X start\n")
     info = {"n": n, "verdict": None, "saving": round(saving, 2)}
     t0 = time.process_time()
