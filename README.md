@@ -48,7 +48,7 @@ The program applies each patch in memory, runs the tests that can be affected, a
 
 ## The interpreter
 
-Dockerfile step 0 adds a python-build-standalone build of the same CPython version (3.13.18). `build/fetch_python.py` downloads one file from a GitHub release at a fixed tag and checks its sha256. `build/sitecustomize.py` makes its `sqlite3` module load the pinned image's own SQLite extension. `build/check_python.py` compares the two interpreters at build time. It checks the version, bytecode magic, hashes, limits, float output and SQLite behavior. On any failure, the image keeps its own interpreter.
+Dockerfile step 0 adds an alternate build of the same CPython version (3.13.18). `build/fetch_python.py` downloads one file from a GitHub release at a fixed tag and checks its sha256. `build/sitecustomize.py` makes its `sqlite3` module load the pinned image's own SQLite extension. `build/check_python.py` compares the two interpreters at build time. It checks the version, bytecode magic, hashes, limits, float output and SQLite behavior. On any failure, the image keeps its own interpreter.
 
 ## The maps
 
@@ -95,7 +95,7 @@ The image build also writes the executor row cache, the DuckDB answer recording 
 | `app/*.py` | run-time modules (`engine`, `patchrules`, `infect`, `keymap`, `cone`, `statefp`, `stmtmap`, `reduce`, `runner`, `pool`, `preload`, `lazymods`, `duckreplay`, `tokcheck`) and build-time scripts (`build_exec_cache.py`, `build_duck_replay.py`, `build_base_state.py`) |
 | `app/maps/` | the maps |
 | `app/tools/` | the scripts that built the maps, with `infect2/`, `infect_hidden/`, `tight/` and `plugin/` |
-| `sample/`, `score.py`, `Makefile`, `SCORING.md` | the kit of the organizers, unchanged. `make sample` builds the image, runs it on the 30 sample commits, and scores the output |
+| `licenses/sample/`, `score.py`, `Makefile`, `SCORING.md` | the kit of the organizers, unchanged. `make sample` builds the image, runs it on the 30 sample commits, and scores the output |
 
 ## License
 

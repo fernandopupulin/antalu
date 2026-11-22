@@ -17,6 +17,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 #    verdicts must be those of the pinned image, so its sqlite3 module is made to use the image's own
 #    SQLite (build/sitecustomize.py) and build/check_python.py compares the two interpreters. If the
 #    download or the check fails, "python" stays the pinned image's interpreter: same answers, more CPU.
+COPY licenses/interpreter.url licenses/base-tree.url /tmp/licenses/
 COPY build/fetch_python.py build/sitecustomize.py build/check_python.py /tmp/build/
 RUN mkdir -p /opt/br/bin \
     && ( PYTHONHASHSEED=0 sh -c '/usr/local/bin/python3.13 /tmp/build/fetch_python.py /opt \
@@ -34,9 +35,9 @@ RUN python -m pip install --no-cache-dir --no-deps --no-compile --disable-pip-ve
     && rm /tmp/requirements.txt
 
 # 2. sqlglot at the pinned commit (GitHub archive of sqlglot's own repo; no git, no apt)
-COPY build/fetch_sqlglot.py /tmp/fetch_sqlglot.py
-RUN /usr/local/bin/python3.13 /tmp/fetch_sqlglot.py /repo b5e23dd1faff7c2a14ef374d02be8bab60c9343d6d3140690cbad12dbcc7764e \
-    && rm /tmp/fetch_sqlglot.py
+COPY build/fetch_sqlglot.py /tmp/build/fetch_sqlglot.py
+RUN /usr/local/bin/python3.13 /tmp/build/fetch_sqlglot.py /repo b5e23dd1faff7c2a14ef374d02be8bab60c9343d6d3140690cbad12dbcc7764e \
+    && rm -rf /tmp/build /tmp/licenses
 
 # 3. bytecode for everything that can be imported (stdlib, site-packages, sqlglot, tests), as
 #    unchecked-hash pycs: the run disk is read-only, so nothing may be compiled or stat-checked there.

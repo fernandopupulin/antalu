@@ -9,7 +9,7 @@ usage (inside br-label):
     -v /root/project/work/sqlglot:/repo:ro -v /root/project/work/trace:/trace:ro \
     -v /root/project/work/rt:/rt:ro -v /root/project/work/deftime:/out \
     -v /root/project/work/units/raw:/units:ro -v /root/project/work/fullcov/raw:/fullcov:ro \
-    -v /root/project/nap-time/sample/tests.json:/data/tests.json:ro -w /repo br-label \
+    -v /path/to/repo/licenses/sample/tests.json:/data/tests.json:ro -w /repo br-label \
     python /out/build_defmap.py [/out/defmap.pkl]
   (/units and /fullcov are optional: direct-runner coverage, merged like rt/build_maps.py does)
 

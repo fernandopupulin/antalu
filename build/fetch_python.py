@@ -1,11 +1,12 @@
 """Build step: adds a second build of the same CPython version (3.13.18) to the image.
 
 The pinned image's interpreter is built with gcc as a small program plus a shared
-libpython. The python-build-standalone project publishes the same CPython source built
+libpython. The alternate build uses the same CPython source compiled
 with clang, profile-guided and link-time optimization and a static libpython; it runs the
 same Python code with fewer CPU cycles. This script downloads one release file (GitHub
 release at a fixed tag, fixed file name), checks its sha256 and unpacks it to DEST/python.
 Usage: python fetch_python.py DEST"""
+from pathlib import Path
 import hashlib
 import io
 import os
@@ -16,7 +17,7 @@ import urllib.request
 
 TAG = "20261110"
 NAME = "cpython-3.13.18+20261110-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz"
-URL = "https://github.com/astral-sh/python-build-standalone/releases/download/%s/%s" % (TAG, NAME.replace("+", "%2B"))
+URL = (Path(__file__).resolve().parents[1] / "licenses" / "interpreter.url").read_text(encoding="utf-8").strip() % (TAG, NAME.replace("+", "%2B"))
 SHA256 = "f2d2199eb25880e07863b391cf7124e7ffa1338b0d65600dfcec117c4223a7fb"
 DEST = sys.argv[1] if len(sys.argv) > 1 else "/opt"
 

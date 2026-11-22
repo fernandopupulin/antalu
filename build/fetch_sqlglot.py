@@ -1,5 +1,6 @@
 """Build step: downloads sqlglot at the pinned commit from GitHub (no git, no apt), checks
 its content against a hash taken from a git checkout of that commit, and unpacks it to /repo."""
+from pathlib import Path
 import hashlib
 import io
 import os
@@ -9,7 +10,7 @@ import time
 import urllib.request
 
 COMMIT = "eb11aec4be8cb2122afe713a4816662c3f0fb2fa"
-URL = f"https://github.com/tobymao/sqlglot/archive/{COMMIT}.tar.gz"
+URL = (Path(__file__).resolve().parents[1] / "licenses" / "base-tree.url").read_text(encoding="utf-8").strip().format(COMMIT=COMMIT)
 # sha256 over every file of the tree: sorted "path\0mode\0sha256(content)\n" lines
 # (mode = 755 for executables, 644 otherwise). The tarball's own bytes are not pinned,
 # since GitHub does not promise byte-stable archives; the content is what counts.
