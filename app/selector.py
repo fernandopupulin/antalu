@@ -4401,7 +4401,7 @@ def run(t_start, deadline, state):
             # On labeled mutants, a long test fails together with another test of its class
             # (or of its fixture file) in nearly every case, and almost never without one.
             # The tests of its class did run (see protect below), so their verdicts decide.
-            quiet_limit = min(QUIET_HOLD_SECONDS, 1.0)
+            quiet_limit = min(QUIET_HOLD_SECONDS, 0.10)
             selected.update(n for n in held if seconds[n] <= quiet_limit)
             borderline = [n for n in held if quiet_limit < seconds[n] <= QUIET_HOLD_SECONDS]
             if borderline:
