@@ -4494,7 +4494,15 @@ def run(t_start, deadline, state):
             return [n for n in cands if cost[n] <= 60 or RUN_SLOW], [], cost
         # a test is held (not run, selected as it is) when a run costs more CPU than
         # its selection costs in the worst case
-        limit = {n: max(HOLD_SECONDS, HOLD_FACTOR * (WORKER_COST + seconds[n])) for n in cands}
+        # Keep the wider verification window for tests that can dominate a worker.
+        # Short tests retain the original admission threshold and all commit guards.
+        limit = {
+            n: max(
+                HOLD_SECONDS if seconds[n] >= WORKER_COST else min(HOLD_SECONDS, 1.5),
+                HOLD_FACTOR * (WORKER_COST + seconds[n]),
+            )
+            for n in cands
+        }
         ran = [n for n in cands if cost[n] <= limit[n]]
         held = [n for n in cands if cost[n] > limit[n]]
         if plan.watch:
