@@ -97,6 +97,10 @@ The image build also writes the executor row cache, the DuckDB answer recording 
 | `app/tools/` | the scripts that built the maps, with `infect2/`, `infect_hidden/`, `tight/` and `plugin/` |
 | `licenses/sample/`, `score.py`, `Makefile`, `SCORING.md` | the kit of the organizers, unchanged. `make sample` builds the image, runs it on the 30 sample commits, and scores the output |
 
+## Use of AI
+
+Antalos used OpenAI Codex to analyze selector performance, implement changes to TPC-DS query sampling, and validate those changes against labeled patches.
+
 ## License
 
 See [license and attribution](licenses/).
