@@ -84,5 +84,8 @@ RUN (timeout 120 python /app/build_exec_cache.py /repo /app/cache --check \
     && python -m compileall -f -q --invalidation-mode unchecked-hash /app \
     && chmod -R a+rX /app
 
+# Test whether evidence-based selection for hot patches pays with the normal CPU threshold.
+ENV BR_HOT_QUIET_HOLD=0
+
 WORKDIR /repo
 CMD ["python", "/app/main.py"]
