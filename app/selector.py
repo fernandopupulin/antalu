@@ -2552,6 +2552,10 @@ def run_stage_check(plan: Plan, tests, started, keeps, seen, broken, forced, set
             check = stage_audit.AuditCheck(record, set(st["later"]), st["to_end"] + budget, active)
         else:
             check = stages.StageCheck(record, set(st["later"]), st["to_end"] + budget, active)
+            # Spend on a real comparison only when the marginal saving can pay for
+            # a whole worker. The existing guard still limits the check's total CPU.
+            if saving >= WORKER_COST and os.environ.get("BR_STAGE_COMPARE", "1") == "1":
+                check.comparison_limit = 1
         pairs = code_pairs + list(plan.fpairs or ())  # function bodies that the commit changes
         alias = stages.code_alias(pairs) if pairs else None
         # as for a test: the "S" line, the dialect registry of a full run, the CPU limit
@@ -2585,6 +2589,7 @@ def run_stage_check(plan: Plan, tests, started, keeps, seen, broken, forced, set
         info["t_run"] = round(time.process_time() - t0, 3)
         info.update(same=len(check.same), ran=[[i, why] for i, why in check.ran[:8]], nran=len(check.ran),
                     proved=len(check.proved), seq="".join(check.seq), spent=round(check.spent, 3), why=check.why,
+                    compared=check.actual_comparisons,
                     run=None if not results else results[0])
         if not results or results[0] is None:
             verdict = None
@@ -4019,6 +4024,59 @@ def improve_two_workers(groups, seconds):
     return [sorted(first), sorted(second)]
 
 
+def improve_workers(groups, seconds):
+    """Search for a cheaper final schedule without changing the selected tests."""
+    groups = improve_two_workers(groups, seconds)
+    if len(groups) < 2:
+        return groups
+    durations = {n: round(seconds[n] * 1000) for group in groups for n in group}
+    if len(durations) > 48:
+        return groups
+    fee = round(WORKER_COST * 1000)
+    best = max(sum(durations[n] for n in group) for group in groups) + len(groups) * fee
+    total, longest = sum(durations.values()), max(durations.values())
+    items = sorted(durations, key=lambda n: (-durations[n], n))
+    remaining = 1024  # bound selector CPU across all worker counts for this commit
+
+    def fit(index):
+        nonlocal remaining
+        if index == len(items):
+            return True
+        if remaining <= 0:
+            return False
+        remaining -= 1
+        n = items[index]
+        weight = durations[n]
+        tried = set()
+        for lane, load in enumerate(loads):
+            if load in tried or load + weight > limit:
+                continue
+            tried.add(load)
+            loads[lane] += weight
+            bins[lane].append(n)
+            if fit(index + 1):
+                return True
+            bins[lane].pop()
+            loads[lane] = load
+        return False
+
+    for workers in range(3, min(8, len(items)) + 1):
+        floor = max(longest, (total + workers - 1) // workers)
+        if floor + workers * fee >= best:
+            continue
+        lo, hi = floor, best - workers * fee - 1
+        while lo <= hi and remaining > 0:
+            limit = (lo + hi) // 2
+            loads, bins = [0] * workers, [[] for _ in range(workers)]
+            if fit(0):
+                groups = [sorted(group) for group in bins if group]
+                best = max(loads) + len(groups) * fee
+                hi = min(max(loads) - 1, best - workers * fee - 1)
+            else:
+                lo = limit + 1
+    return groups
+
+
 def packed_seconds(numbers, seconds):
     """What a selection costs: the largest worker load of pack() plus 2 s per worker."""
     bins = pack(sorted(numbers), seconds)
@@ -4458,7 +4516,7 @@ def run(t_start, deadline, state):
             if unimportable and status == "END" and not plan.all_fail and "import does not end" not in plan.note:
                 plan.note.append("collection stops: %d tests of files that do not import (of %d)" % (len(unimportable), len(selected)))
                 selected = unimportable
-        answers[c] = improve_two_workers(pack(sorted(selected), seconds), seconds)
+        answers[c] = improve_workers(pack(sorted(selected), seconds), seconds)
         if DEBUG:
             debug_rows[c] = {
                 "mode": plan.mode, "status": status, "cands": sorted(plan.cands), "cpu": round(sum(os.times()[:4]), 3),

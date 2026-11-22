@@ -25,7 +25,8 @@ run time the test runs once with the patched code, with a hook on its tasks:
   right there, as in an ordinary run of the test, and the test receives its rows. When they
   equal the pinned rows (same columns, same values of the same types, same order), the
   comparison with DuckDB's answer to the same SQL text gets the same two inputs as on the
-  pinned commit, where it passes; it is left out. Other rows: no verdict, the check ends.
+  pinned commit, where it passes; it is left out. If the rows differ, the check can run the
+  original comparison against the same DuckDB SQL, within its comparison limit.
 - The runs to the end have a budget (the build-time CPU seconds of their later work; the
   selector sets it from the seconds that the test would add to the answer). When the budget
   is used up, the check ends without a verdict.
@@ -243,6 +244,8 @@ class StageCheck:
         self.ran = []  # (task, why it ran to its end)
         self.proved = []
         self.seq = []  # one letter per task, in the order of the test (for the logs)
+        self.actual_comparisons = 0
+        self.comparison_limit = 0
         self.task = None
         self.module = None
         self.globals = None
@@ -360,15 +363,22 @@ class StageCheck:
         self.task = None
         return executor(*args, **kwargs).execute(plan(plan_input.expression))
 
-    def on_result(self, index, table):
+    def on_result(self, index, table, *, allow_compare=True):
         """The test received the rows of a task that ran to its end. True: the comparison
-        with DuckDB's answer is left out (the rows are the pinned rows and the comparison
-        passes, or the check is over and has no verdict anyway)."""
+        with DuckDB's answer is left out. False: run the test's own comparison and let
+        unittest record any failure."""
         want = self.tasks.get(index)
-        if want is not None and not self.over and rows_fingerprint(table) == want[3]:
+        if self.over:
+            return True
+        if want is not None and want[3] is not None and rows_fingerprint(table) == want[3]:
             self.proved.append(index)
-        else:
-            self.stop("rows of task %d" % index)
+            return True
+        if allow_compare and want is not None and self.actual_comparisons < self.comparison_limit:
+            self.actual_comparisons += 1
+            # A failing comparison still makes the enclosing unittest run fail.
+            self.proved.append(index)
+            return False
+        self.stop("rows of task %d" % index)
         return True
 
     def sql_text_differs(self, index):
@@ -450,7 +460,7 @@ class StageCheck:
             module.initializer(getattr(module, self.record["schema"]), getattr(case, self.record["tables"]))
             value = self.run_task(index, fn, args, kwargs)
             if value is not None:
-                self.on_result(index, pickle.loads(pickle.dumps(value)))
+                self.on_result(index, pickle.loads(pickle.dumps(value)), allow_compare=False)
         except Exception:  # noqa: BLE001  (the test will very likely fail in the same way)
             self.stop("probe: error in task %d" % index)
         alive = not self.over
