@@ -84,5 +84,8 @@ RUN (timeout 120 python /app/build_exec_cache.py /repo /app/cache --check \
     && python -m compileall -f -q --invalidation-mode unchecked-hash /app \
     && chmod -R a+rX /app
 
+# Raise the individual CPU threshold while retaining the commit budget and per-test guard.
+ENV BR_HOLD=1000
+
 WORKDIR /repo
 CMD ["python", "/app/main.py"]
