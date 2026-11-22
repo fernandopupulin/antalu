@@ -4374,7 +4374,15 @@ def run(t_start, deadline, state):
         selected.update(suspects)
         failing = failing | suspects
         blind_set = set(blind)
-        selected.update(blind_set)
+        # For a completed hot patch, apply the held-test evidence rule also to
+        # tests deliberately skipped after a failure. Interrupted runs keep all.
+        filter_skipped = (
+            blind_set and status == "END" and plan.mode == "hot" and failing
+            and not (suspects or plan.watch or plan.broken or plan.all_fail
+                     or plan.pool_died or plan.global_leak is not None)
+        )
+        if not filter_skipped:
+            selected.update(blind_set)
         selected.update(plan.blind)
         unknown = [n for n in ran if n not in verdicts and n not in blind_set and n not in suspects]
         if unknown:
@@ -4387,6 +4395,11 @@ def run(t_start, deadline, state):
         # (the stage check, when it ran for a held long test: on "passes" the test is not held
         # any more for the rules about verdicts and evidence; on "fails" it is selected)
         info = plan.stage_info
+        if filter_skipped and not unknown:
+            held = set(held) | blind_set
+            selected.update(blind_set & (plan.protect | plan.data_cands | plan.sure_infected))
+        elif filter_skipped:
+            selected.update(blind_set)
         held_all = held
         if info and info.get("verdict") is False and not plan.all_fail:
             held = [n for n in held if n != info["n"]]
@@ -4401,7 +4414,7 @@ def run(t_start, deadline, state):
             # On labeled mutants, a long test fails together with another test of its class
             # (or of its fixture file) in nearly every case, and almost never without one.
             # The tests of its class did run (see protect below), so their verdicts decide.
-            quiet_limit = min(QUIET_HOLD_SECONDS, 1.0)
+            quiet_limit = min(QUIET_HOLD_SECONDS, 0.10)
             selected.update(n for n in held if seconds[n] <= quiet_limit)
             borderline = [n for n in held if quiet_limit < seconds[n] <= QUIET_HOLD_SECONDS]
             if borderline:
