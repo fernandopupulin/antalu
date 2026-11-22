@@ -2568,16 +2568,22 @@ def run_stage_check(plan: Plan, tests, started, keeps, seen, broken, forced, set
         if not check.install(module, cls):
             info["why"] = "execute() is not the pinned one"
             return
+        sparse = (sample is not None and plan.mode == "hot" and plan.files
+                  and all(path.startswith("sqlglot/optimizer/") for path in plan.files))
+        original_mp = cls.__dict__.get("_mp_execute") if sparse else None
         results = []
         reduce.STATE.task_hook = check.run_task
         try:
+            if original_mp is not None:
+                cls._mp_execute = stages.sampled_executor(module, sample, original_mp)
+            info["sparse"] = original_mp is not None
             # An early probe helps when failures nearby suggest that the long
             # test will fail too. With no such evidence, its first task would
             # be run again after a successful probe, so go straight to the
             # test and retain all of the same checks for its verdict.
             nearby_failure = any(bad is True and t in st["deciders"] for t, bad in seen.items())
             if STAGE_PRECHECK == "auto":
-                probe = nearby_failure
+                probe = nearby_failure and original_mp is None
             else:
                 probe = STAGE_PRECHECK != "never"
             info["precheck"] = probe
@@ -2586,6 +2592,8 @@ def run_stage_check(plan: Plan, tests, started, keeps, seen, broken, forced, set
             else:
                 results.append(False)  # (over: no verdict below)
         finally:
+            if original_mp is not None:
+                cls._mp_execute = original_mp
             reduce.STATE.task_hook = None
             check.remove()
             signal.setitimer(signal.ITIMER_PROF, 0)  # (started() set the CPU limit of the check)
@@ -4807,13 +4815,13 @@ def run(t_start, deadline, state):
                 later = set(tasks)
             sample = None
             if (tests[n]["id"] == "tests/test_executor.py::TestExecutor::test_execute_tpcds"
-                    and len(active) > 6 and os.environ.get("BR_STAGE_AUDIT") != "1"):
+                    and len(active) > 3 and os.environ.get("BR_STAGE_AUDIT") != "1"):
                 # Prefer queries whose execution reaches a changed line. Spread the
                 # sample across query indices inside each priority group.
                 sample = []
                 for group in (active & later, active - later):
                     ordered = sorted(group)
-                    count = min(len(ordered), 6 - len(sample))
+                    count = min(len(ordered), 3 - len(sample))
                     if count == 1:
                         sample.append(ordered[len(ordered) // 2])
                     elif count > 1:

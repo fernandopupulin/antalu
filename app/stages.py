@@ -219,6 +219,31 @@ class _PlanInput:
         self.expression = expression
 
 
+def sampled_executor(module, sample, original):
+    """Submit only sampled TPC-DS queries, preserving their fixture and task indices."""
+    from reduce import STATE
+
+    indices = sorted(sample)
+
+    def execute(case, schema, tables, sqls, tpch):
+        if tpch or indices[-1] >= len(sqls):
+            return original(case, schema, tables, sqls, tpch)
+        with module.ProcessPoolExecutor(mp_context=module.get_context("spawn"),
+                                        initializer=module.initializer, initargs=(schema, tables)) as pool:
+            futures = []
+            for i in indices:
+                args, sql, _ = sqls[i]
+                expression = module.parse_one(sql)
+                STATE.task_counter = i
+                futures.append((i, pool.submit(module.mp_execute, expression, args)))
+            for i, future in futures:
+                table = future.result()
+                if table is not None:
+                    case.subtestHelper(i, table, tpch=False)
+
+    return execute
+
+
 class StageCheck:
     """One run of the test with the hook run_task on its tasks (see the module text). After
     it: 'same' holds the tasks that stopped with the pinned input, 'ran' the tasks that ran
