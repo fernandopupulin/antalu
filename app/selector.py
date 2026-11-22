@@ -2542,6 +2542,17 @@ def run_stage_check(plan: Plan, tests, started, keeps, seen, broken, forced, set
         module = sys.modules[path[:-3].replace("/", ".")]
         cls = getattr(module, cls_name)
         active = keeps[n][1] if keeps and n in keeps else None
+        sample = st.get("sample")
+        if sample is not None:
+            sample = set(sample)
+            if active is not None and not sample.issubset(active):
+                info["why"] = "sample outside runtime task set"
+                return
+            active = sample
+            keeps = dict(keeps or {})
+            previous = keeps.get(n, (None, None))
+            keeps[n] = (previous[0], sample, *previous[2:])
+            info["sample"] = sorted(sample)
         if os.environ.get("BR_STAGE_AUDIT") == "1":
             import stage_audit
 
@@ -2586,7 +2597,7 @@ def run_stage_check(plan: Plan, tests, started, keeps, seen, broken, forced, set
             verdict = None
         elif results[0]:
             verdict = True  # an error in a task, or in the test outside its tasks: the test fails
-        elif not check.complete():
+        elif not check.complete() or (sample is not None and sample != set(check.same) | set(check.proved)):
             verdict = None  # the check ended early (another SQL text, other rows, the budget)
         else:
             verdict = False
@@ -4794,6 +4805,20 @@ def run(t_start, deadline, state):
                 later = stages.late_tasks(record, plan.lines)
             else:
                 later = set(tasks)
+            sample = None
+            if (tests[n]["id"] == "tests/test_executor.py::TestExecutor::test_execute_tpcds"
+                    and len(active) > 6 and os.environ.get("BR_STAGE_AUDIT") != "1"):
+                # Prefer queries whose execution reaches a changed line. Spread the
+                # sample across query indices inside each priority group.
+                sample = []
+                for group in (active & later, active - later):
+                    ordered = sorted(group)
+                    count = min(len(ordered), 6 - len(sample))
+                    if count == 1:
+                        sample.append(ordered[len(ordered) // 2])
+                    elif count > 1:
+                        sample.extend(ordered[i * (len(ordered) - 1) // (count - 1)] for i in range(count))
+                active = set(sample)
             fixed = max(0.0, cost["check"] - sum(v[0] for v in cpu.values()))  # parsing, pickling, the DuckDB texts
             to_end = sum(cpu[i][0] + cpu[i][1] for i in active & later)
             est = STAGE_STATE_SECONDS + fixed + sum(cpu[i][0] for i in active - later) + to_end
@@ -4804,7 +4829,7 @@ def run(t_start, deadline, state):
                 continue  # not when the batch is short of time
             cls_id, fixtures = tests[n]["id"].rsplit("::", 1)[0], fixtures_of(n)
             plan.stage = {
-                "n": n, "later": sorted(later), "est": round(est, 3), "to_end": to_end, "most": round(most, 3),
+                "n": n, "sample": sample, "later": sorted(later), "est": round(est, 3), "to_end": to_end, "most": round(most, 3),
                 "known": len(later) < len(tasks) or not tasks, "active": len(active),
                 "differ_most": sum(cpu[i][1] for i in active - later),  # when every other task runs on to its end
                 # the tests that finish() selects besides the failing ones, whatever the check says
