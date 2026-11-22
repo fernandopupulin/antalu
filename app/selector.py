@@ -112,8 +112,8 @@ INERT_SECONDS = 1.0  # the same when the import state did not change at all
 CLASS_SETUP_SECONDS = {"tests/test_executor.py::TestExecutor": 1.0} if os.environ.get("BR_CLASS_SETUP", "1") == "1" else {}
 HOLD_FACTOR = float(os.environ.get("BR_HOLD_FACTOR", "0.7"))
 QUIET_HOLD_SECONDS = float(os.environ.get("BR_QUIET_HOLD", "5.0"))
-AFTER_FAIL_RATIO = float(os.environ.get("BR_AFTER_FAIL", "0.5"))
-MANY_FAILURES = 8  # with this many failing tests, a long test on the same code is selected too
+AFTER_FAIL_RATIO = float(os.environ.get("BR_AFTER_FAIL", "0.25"))
+MANY_FAILURES = 16  # with this many failing tests, a long test on the same code is selected too
 # A plain pytest run stops at collection when a test file cannot be imported (see finish()).
 # BR_STOP_AT_COLLECTION=0: such a commit also gets the tests that fail when they run.
 STOP_AT_COLLECTION = os.environ.get("BR_STOP_AT_COLLECTION", "1") == "1"
@@ -2505,7 +2505,9 @@ def run_stage_check(plan: Plan, tests, started, keeps, seen, broken, forced, set
         verdicts = [k for k, bad in seen.items() if bad is not None]
         wanted = st["forced"] or n in forced
         if not wanted and not (st["inert"] and not failing):
-            wanted = not verdicts or len(failing) + st["more"] >= MANY_FAILURES or any(k in st["deciders"] for k in failing)
+            wanted = not verdicts or len(failing) + st["more"] >= MANY_FAILURES or (
+                sum(k in st["class_deciders"] for k in failing) >= 2
+                or any(k in st["fixture_deciders"] for k in failing))
         if not wanted:
             return
     # What the check can save: the seconds that the test adds to the answer of this commit,
@@ -2564,7 +2566,7 @@ def run_stage_check(plan: Plan, tests, started, keeps, seen, broken, forced, set
             # test will fail too. With no such evidence, its first task would
             # be run again after a successful probe, so go straight to the
             # test and retain all of the same checks for its verdict.
-            nearby_failure = any(bad is True and t in st["deciders"] for t, bad in seen.items())
+            nearby_failure = any(bad is True and (t in st["class_deciders"] or t in st["fixture_deciders"]) for t, bad in seen.items())
             if STAGE_PRECHECK == "auto":
                 probe = nearby_failure
             else:
@@ -4352,17 +4354,15 @@ def run(t_start, deadline, state):
             fixture_readers.setdefault(-1, set())
         return fixture_readers.get(n) or frozenset()
 
-    def long_by_evidence(evidence, held, more=0):
-        """The long held tests that the tests in evidence (failing tests) select: those of the
-        same test class or the same .sql fixture file, or all of them with many failures.
-        more: failing tests that may exist unseen (see marginal_holds)."""
-        fail_classes = {test_classes[n] for n in evidence}
+    def held_by_evidence(evidence, held, more=0):
+        """Keep a candidate for a shared fixture, repeated class failures or widespread failure."""
+        fail_classes = collections.Counter(test_classes[n] for n in evidence)
         fail_fixtures = set()
         for n in evidence:
             fail_fixtures.update(fixtures_of(n))
         return {
-            n for n in held if seconds[n] > QUIET_HOLD_SECONDS and (
-                test_classes[n] in fail_classes or fail_fixtures & fixtures_of(n) or len(evidence) + more >= MANY_FAILURES)
+            n for n in held if (
+                fail_classes[test_classes[n]] >= 2 or fail_fixtures & fixtures_of(n) or len(evidence) + more >= MANY_FAILURES)
         }
 
     def finish(c, plan, verdicts, status, ran, held, blind=()):
@@ -4377,7 +4377,7 @@ def run(t_start, deadline, state):
         # For a completed hot patch, apply the held-test evidence rule also to
         # tests deliberately skipped after a failure. Interrupted runs keep all.
         filter_skipped = (
-            blind_set and status == "END" and plan.mode == "hot" and failing
+            blind_set and status == "END" and plan.mode in RESTART_SECONDS and failing
             and not (suspects or plan.watch or plan.broken or plan.all_fail
                      or plan.pool_died or plan.global_leak is not None)
         )
@@ -4411,26 +4411,8 @@ def run(t_start, deadline, state):
         elif plan.broken or not verdicts or unknown:
             selected.update(held)
         else:
-            # On labeled mutants, a long test fails together with another test of its class
-            # (or of its fixture file) in nearly every case, and almost never without one.
-            # The tests of its class did run (see protect below), so their verdicts decide.
-            quiet_limit = min(QUIET_HOLD_SECONDS, 0.10)
-            selected.update(n for n in held if seconds[n] <= quiet_limit)
-            borderline = [n for n in held if quiet_limit < seconds[n] <= QUIET_HOLD_SECONDS]
-            if borderline:
-                failed_classes = {test_classes[n] for n in failing}
-                failed_fixtures = set().union(*(fixtures_of(n) for n in failing))
-                selected.update(
-                    n for n in borderline
-                    if n in plan.sure_infected or n in plan.data_cands
-                    or len(failing) + bool(plan.econ) >= MANY_FAILURES
-                    or test_classes[n] in failed_classes
-                    or not failed_fixtures.isdisjoint(fixtures_of(n))
-                )
-            # (with many failures: a commit that breaks this much can break any test)
-            # (one more failure is counted when marginal_holds held tests: the first failing
-            # test of the runs before that rule may be one of them)
-            selected.update(long_by_evidence(failing, held, 1 if plan.econ else 0))
+            selected.update(held_by_evidence(failing, held, int(bool(plan.econ))))
+            selected.update(n for n in held if n in plan.sure_infected or n in plan.data_cands)
         # held tests that read changed test data directly (see test_data_candidates), or whose
         # token streams changed (run_tokcheck)
         selected.update(n for n in held if n in plan.must)
@@ -4495,7 +4477,7 @@ def run(t_start, deadline, state):
             if plan.stage is not None or plan.stage_info is not None:
                 debug_rows[c]["stage"] = plan.stage_info
                 debug_rows[c]["stage_plan"] = None if plan.stage is None else {
-                    k: (len(v) if k in ("later", "deciders", "others") else round(v, 3) if type(v) is float else v)
+                    k: (len(v) if k in ("later", "class_deciders", "fixture_deciders", "others") else round(v, 3) if type(v) is float else v)
                     for k, v in plan.stage.items()}
             if plan.watch:
                 debug_rows[c]["leaks"] = plan.leaks[:20]
@@ -4838,7 +4820,8 @@ def run(t_start, deadline, state):
                 "inert": "import state unchanged" in plan.note, "more": 1 if plan.econ else 0,
                 "forced": n in plan.must or n in plan.sure_infected,
                 # the tests whose failure selects this one in finish()
-                "deciders": {k for k in ran if tests[k]["id"].rsplit("::", 1)[0] == cls_id or fixtures & fixtures_of(k)},
+                "class_deciders": {k for k in ran if test_classes[k] == cls_id},
+                "fixture_deciders": {k for k in ran if fixtures & fixtures_of(k)},
             }
             return
 
@@ -4948,8 +4931,8 @@ def run(t_start, deadline, state):
             return [], set(), enders
         evidence = bad | plan.suspects
         base = evidence | plan.blind | (plan.skipped & set(cost)) | {n for n in held if seconds[n] <= QUIET_HOLD_SECONDS}
-        base |= long_by_evidence(evidence, held)
-        unrun = base | set(todo) | long_by_evidence(evidence | set(todo), held)
+        base |= held_by_evidence(evidence, held)
+        unrun = base | set(todo) | held_by_evidence(evidence | set(todo), held)
         run_cost = RESTART_SECONDS.get(plan.mode, 1.5) + sum(cost.get(n, 0.0) for n in todo)
         if CPU_PRICE * run_cost >= packed_seconds(unrun, seconds) - packed_seconds(base, seconds):
             plan.suspects.update(todo)
