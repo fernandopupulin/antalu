@@ -112,6 +112,7 @@ INERT_SECONDS = 1.0  # the same when the import state did not change at all
 CLASS_SETUP_SECONDS = {"tests/test_executor.py::TestExecutor": 1.0} if os.environ.get("BR_CLASS_SETUP", "1") == "1" else {}
 HOLD_FACTOR = float(os.environ.get("BR_HOLD_FACTOR", "0.7"))
 QUIET_HOLD_SECONDS = float(os.environ.get("BR_QUIET_HOLD", "5.0"))
+HOT_QUIET_HOLD_SECONDS = float(os.environ.get("BR_HOT_QUIET_HOLD", str(QUIET_HOLD_SECONDS)))
 AFTER_FAIL_RATIO = float(os.environ.get("BR_AFTER_FAIL", "0.5"))
 MANY_FAILURES = 8  # with this many failing tests, a long test on the same code is selected too
 # A plain pytest run stops at collection when a test file cannot be imported (see finish()).
@@ -4352,7 +4353,14 @@ def run(t_start, deadline, state):
             fixture_readers.setdefault(-1, set())
         return fixture_readers.get(n) or frozenset()
 
-    def long_by_evidence(evidence, held, more=0):
+    def quiet_hold_seconds(plan):
+        # A reimport can change a constant used by a held test even when all the
+        # other tests pass. Keep the ordinary threshold for those plans.
+        if plan.mode == "hot" and plan.work and not plan.watch:
+            return HOT_QUIET_HOLD_SECONDS
+        return QUIET_HOLD_SECONDS
+
+    def long_by_evidence(plan, evidence, held, more=0):
         """The long held tests that the tests in evidence (failing tests) select: those of the
         same test class or the same .sql fixture file, or all of them with many failures.
         more: failing tests that may exist unseen (see marginal_holds)."""
@@ -4361,7 +4369,7 @@ def run(t_start, deadline, state):
         for n in evidence:
             fail_fixtures.update(fixtures_of(n))
         return {
-            n for n in held if seconds[n] > QUIET_HOLD_SECONDS and (
+            n for n in held if seconds[n] > quiet_hold_seconds(plan) and (
                 test_classes[n] in fail_classes or fail_fixtures & fixtures_of(n) or len(evidence) + more >= MANY_FAILURES)
         }
 
@@ -4401,16 +4409,16 @@ def run(t_start, deadline, state):
             # On labeled mutants, a long test fails together with another test of its class
             # (or of its fixture file) in nearly every case, and almost never without one.
             # The tests of its class did run (see protect below), so their verdicts decide.
-            selected.update(n for n in held if seconds[n] <= QUIET_HOLD_SECONDS)
+            selected.update(n for n in held if seconds[n] <= quiet_hold_seconds(plan))
             # (with many failures: a commit that breaks this much can break any test)
             # (one more failure is counted when marginal_holds held tests: the first failing
             # test of the runs before that rule may be one of them)
-            selected.update(long_by_evidence(failing, held, 1 if plan.econ else 0))
+            selected.update(long_by_evidence(plan, failing, held, 1 if plan.econ else 0))
         # held tests that read changed test data directly (see test_data_candidates), or whose
         # token streams changed (run_tokcheck)
         selected.update(n for n in held if n in plan.must)
         # long held tests whose own evaluations of the edited comparison change
-        selected.update(n for n in held if n in plan.sure_infected and seconds[n] > QUIET_HOLD_SECONDS)
+        selected.update(n for n in held if n in plan.sure_infected and seconds[n] > quiet_hold_seconds(plan))
         # a test with a small-scale variant that did not run is selected: no evidence rule
         # (neither the long-test rule nor "import state unchanged") drops it
         selected.update(n for n in held if tests[n]["id"] in SCALED_IDS)
@@ -4501,8 +4509,8 @@ def run(t_start, deadline, state):
             # a candidate that does not run may leave a watched container changed unseen, and
             # then every later reader of it is selected (see watch_readers): all but the long
             # tests run
-            ran = [n for n in cands if cost[n] <= limit[n] or seconds[n] <= QUIET_HOLD_SECONDS]
-            held = [n for n in cands if not (cost[n] <= limit[n] or seconds[n] <= QUIET_HOLD_SECONDS)]
+            ran = [n for n in cands if cost[n] <= limit[n] or seconds[n] <= quiet_hold_seconds(plan)]
+            held = [n for n in cands if not (cost[n] <= limit[n] or seconds[n] <= quiet_hold_seconds(plan))]
         if STAGE == "force":
             # validation: the test with a stage map never runs as a whole, so that the check sees it
             moved = [n for n in ran if tests[n]["id"] in maps.stages()]
@@ -4516,7 +4524,7 @@ def run(t_start, deadline, state):
             # for the later tests, and finish() must then select all their readers
             budget = float("inf")
         # the verdicts of these tests decide about the long held tests: they run first
-        long_held = [n for n in held if seconds[n] > QUIET_HOLD_SECONDS]
+        long_held = [n for n in held if seconds[n] > quiet_hold_seconds(plan)]
         protect_classes = {tests[n]["id"].rsplit("::", 1)[0] for n in long_held}
         protect_fixtures = set()
         for n in long_held:
@@ -4585,7 +4593,7 @@ def run(t_start, deadline, state):
         ran before this rule, and finish() sees the same failing tests, except one: the
         first failing test itself may now be a held one. finish() counts one more failure
         for that (see long_by_evidence). Not held by this rule: a test longer than
-        QUIET_HOLD_SECONDS (finish() selects those by evidence only), a test with a
+        the quiet hold threshold (finish() selects those by evidence only), a test with a
         small-scale variant, a test that shares a class or a .sql fixture with a long held
         test (its verdict is evidence for that test), and a test that uses a class-level
         process pool (its run shows whether the pool dies), and a test whose test file names an
@@ -4593,11 +4601,11 @@ def run(t_start, deadline, state):
         free = [
             n for n in ran
             if cost[n] > max(0.03, AFTER_FAIL_RATIO * seconds[n]) and n not in plan.protect
-            and seconds[n] <= QUIET_HOLD_SECONDS and tests[n]["id"] not in SCALED_IDS
+            and seconds[n] <= quiet_hold_seconds(plan) and tests[n]["id"] not in SCALED_IDS
         ]
         if not free:
             return set()
-        long_held = [n for n in held if seconds[n] > QUIET_HOLD_SECONDS]
+        long_held = [n for n in held if seconds[n] > quiet_hold_seconds(plan)]
         long_fixtures = set()
         for n in long_held:
             long_fixtures.update(fixtures_of(n))
@@ -4615,7 +4623,7 @@ def run(t_start, deadline, state):
         base = set(plan.blind)
         base.update(
             n for n in held
-            if seconds[n] <= QUIET_HOLD_SECONDS or n in plan.must or n in plan.sure_infected or tests[n]["id"] in SCALED_IDS
+            if seconds[n] <= quiet_hold_seconds(plan) or n in plan.must or n in plan.sure_infected or tests[n]["id"] in SCALED_IDS
         )
         total = sum(seconds[n] for n in base)
         longest = max((seconds[n] for n in base), default=0.0)
@@ -4684,7 +4692,7 @@ def run(t_start, deadline, state):
             import tokcheck
 
             checkable = tokcheck.tests_of(MAPS)
-            plan.tokcheck = sorted(t for t in held if t in checkable and seconds[t] > QUIET_HOLD_SECONDS)
+            plan.tokcheck = sorted(t for t in held if t in checkable and seconds[t] > quiet_hold_seconds(plan))
             if plan.watch and plan.tokcheck:
                 # The check tokenizes in the child before the tests run, and patched
                 # tokenizer code could then write to a watched container before the first
@@ -4700,7 +4708,7 @@ def run(t_start, deadline, state):
         # a run selects every later reader of the watched containers: no guard there.
         plan.guard = {}
         if GUARD and not RUN_ALL and not plan.watch:
-            long_secs = [seconds[t] for t in held if seconds[t] > QUIET_HOLD_SECONDS]
+            long_secs = [seconds[t] for t in held if seconds[t] > quiet_hold_seconds(plan)]
             for n in ran:
                 stake = seconds[n] + WORKER_COST
                 if n in plan.protect and long_secs:
@@ -4721,7 +4729,7 @@ def run(t_start, deadline, state):
         # the runs that are left cost more CPU than that, they end there and the tests
         # are selected as they are. The answer then holds every candidate without a pass.
         plan.enders = {}
-        long_held = [t for t in held if seconds[t] > QUIET_HOLD_SECONDS]
+        long_held = [t for t in held if seconds[t] > quiet_hold_seconds(plan)]
         if long_held and not RUN_ALL and not plan.watch and max(seconds[t] for t in long_held) >= sum(seconds[n] for n in ran):
             plan.enders["held"] = set(long_held)
             left_cost = sum(cost[n] for n in ran)
@@ -4779,7 +4787,7 @@ def run(t_start, deadline, state):
         if plan.mode != "hot" and not preload.exec_fresh_ok(plan.files):
             return
         for n in held:
-            if seconds[n] <= QUIET_HOLD_SECONDS or n not in plan.cands:
+            if seconds[n] <= quiet_hold_seconds(plan) or n not in plan.cands:
                 continue
             record = maps.stages().get(tests[n]["id"])
             if record is None:
@@ -4809,7 +4817,7 @@ def run(t_start, deadline, state):
                 "differ_most": sum(cpu[i][1] for i in active - later),  # when every other task runs on to its end
                 # the tests that finish() selects besides the failing ones, whatever the check says
                 "others": sorted(plan.blind | {k for k in held if k != n and (
-                    seconds[k] <= QUIET_HOLD_SECONDS or k in plan.must or tests[k]["id"] in SCALED_IDS)}),
+                    seconds[k] <= quiet_hold_seconds(plan) or k in plan.must or tests[k]["id"] in SCALED_IDS)}),
                 "inert": "import state unchanged" in plan.note, "more": 1 if plan.econ else 0,
                 "forced": n in plan.must or n in plan.sure_infected,
                 # the tests whose failure selects this one in finish()
@@ -4922,9 +4930,9 @@ def run(t_start, deadline, state):
         if not todo:
             return [], set(), enders
         evidence = bad | plan.suspects
-        base = evidence | plan.blind | (plan.skipped & set(cost)) | {n for n in held if seconds[n] <= QUIET_HOLD_SECONDS}
-        base |= long_by_evidence(evidence, held)
-        unrun = base | set(todo) | long_by_evidence(evidence | set(todo), held)
+        base = evidence | plan.blind | (plan.skipped & set(cost)) | {n for n in held if seconds[n] <= quiet_hold_seconds(plan)}
+        base |= long_by_evidence(plan, evidence, held)
+        unrun = base | set(todo) | long_by_evidence(plan, evidence | set(todo), held)
         run_cost = RESTART_SECONDS.get(plan.mode, 1.5) + sum(cost.get(n, 0.0) for n in todo)
         if CPU_PRICE * run_cost >= packed_seconds(unrun, seconds) - packed_seconds(base, seconds):
             plan.suspects.update(todo)
@@ -5366,7 +5374,7 @@ def run(t_start, deadline, state):
             if info is not None and (set(info[2]) | info[3]).intersection(plan.files):
                 return False
         lazy_class = preload.EXEC_KEY[0].replace(".", "/") + ".py::" + preload.EXEC_KEY[1] + "::"
-        if any(seconds[n] > QUIET_HOLD_SECONDS or tests[n]["id"].startswith(lazy_class) for n in plan.cands):
+        if any(seconds[n] > quiet_hold_seconds(plan) or tests[n]["id"].startswith(lazy_class) for n in plan.cands):
             return False
         ran, held, allowed, skip, cap = prepare_plan(plan)
         if not ran or held or plan.tokcheck or plan.enders or set(ran) != plan.cands:
