@@ -2569,6 +2569,7 @@ def run_stage_check(plan: Plan, tests, started, keeps, seen, broken, forced, set
             info["why"] = "execute() is not the pinned one"
             return
         sparse = (sample is not None and plan.mode == "hot" and plan.files
+                  and "sqlglot/optimizer/scope.py" not in plan.files
                   and all(path.startswith("sqlglot/optimizer/") for path in plan.files))
         original_mp = cls.__dict__.get("_mp_execute") if sparse else None
         results = []
@@ -4816,16 +4817,9 @@ def run(t_start, deadline, state):
             sample = None
             if (tests[n]["id"] == "tests/test_executor.py::TestExecutor::test_execute_tpcds"
                     and len(active) > 3 and os.environ.get("BR_STAGE_AUDIT") != "1"):
-                # Prefer queries whose execution reaches a changed line. Spread the
-                # sample across query indices inside each priority group.
-                sample = []
-                for group in (active & later, active - later):
-                    ordered = sorted(group)
-                    count = min(len(ordered), 3 - len(sample))
-                    if count == 1:
-                        sample.append(ordered[len(ordered) // 2])
-                    elif count > 1:
-                        sample.extend(ordered[i * (len(ordered) - 1) // (count - 1)] for i in range(count))
+                import stages
+
+                sample = stages.select_sample(record, active, later, plan.lines)
                 active = set(sample)
             fixed = max(0.0, cost["check"] - sum(v[0] for v in cpu.values()))  # parsing, pickling, the DuckDB texts
             to_end = sum(cpu[i][0] + cpu[i][1] for i in active & later)

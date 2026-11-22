@@ -207,6 +207,58 @@ def late_tasks(record, lines):
     return out
 
 
+def select_sample(record, active, later, lines):
+    """Choose from the previous six anchors; preserve their changed-line coverage."""
+    from itertools import combinations
+
+    anchors = []
+    for group in (active & later, active - later):
+        ordered = sorted(group)
+        count = min(len(ordered), 6 - len(anchors))
+        if count == 1:
+            anchors.append(ordered[len(ordered) // 2])
+        elif count > 1:
+            anchors.extend(ordered[i * (len(ordered) - 1) // (count - 1)] for i in range(count))
+    if len(anchors) <= 3:
+        return anchors
+
+    # Each bit stands for one anchor. Count the mapped lines hit by any
+    # anchor in each combination, and separately those changed in this patch.
+    bits = {task: 1 << pos for pos, task in enumerate(anchors)}
+    masks = [sum(bits.get(task, 0) for task in group) for group in record["sets"]]
+    all_counts = {}
+    changed_masks = set()
+    for path, rows in record["late"].items():
+        changed = lines.get(path) or ()
+        for line, group in rows.items():
+            mask = masks[group]
+            if mask:
+                all_counts[mask] = all_counts.get(mask, 0) + 1
+                if line in changed:
+                    changed_masks.add(mask)
+
+    # Retain the first query the previous run would actually execute.
+    first = min(anchors)
+    rest = sorted(set(anchors) - {first})
+    for size in range(3, len(anchors) + 1):
+        best = None
+        best_score = None
+        for others in combinations(rest, size - 1):
+            queries = (first, *others)
+            mask = sum(bits[q] for q in queries)
+            if any(not (mask & changed) for changed in changed_masks):
+                continue
+            covered = sum(count for group, count in all_counts.items() if group & mask)
+            cpu = sum(record["cpu"][q][0] + (record["cpu"][q][1] if q in later else 0)
+                      for q in queries)
+            score = (covered, -cpu)
+            if best_score is None or score > best_score:
+                best, best_score = queries, score
+        if best is not None:
+            return list(best)
+    return anchors
+
+
 class _Same(BaseException):
     """Raised where the plan would be built: the task ends there."""
 
