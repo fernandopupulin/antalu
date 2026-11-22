@@ -4401,7 +4401,19 @@ def run(t_start, deadline, state):
             # On labeled mutants, a long test fails together with another test of its class
             # (or of its fixture file) in nearly every case, and almost never without one.
             # The tests of its class did run (see protect below), so their verdicts decide.
-            selected.update(n for n in held if seconds[n] <= QUIET_HOLD_SECONDS)
+            quiet_limit = min(QUIET_HOLD_SECONDS, 1.0)
+            selected.update(n for n in held if seconds[n] <= quiet_limit)
+            borderline = [n for n in held if quiet_limit < seconds[n] <= QUIET_HOLD_SECONDS]
+            if borderline:
+                failed_classes = {test_classes[n] for n in failing}
+                failed_fixtures = set().union(*(fixtures_of(n) for n in failing))
+                selected.update(
+                    n for n in borderline
+                    if n in plan.sure_infected or n in plan.data_cands
+                    or len(failing) + bool(plan.econ) >= MANY_FAILURES
+                    or test_classes[n] in failed_classes
+                    or not failed_fixtures.isdisjoint(fixtures_of(n))
+                )
             # (with many failures: a commit that breaks this much can break any test)
             # (one more failure is counted when marginal_holds held tests: the first failing
             # test of the runs before that rule may be one of them)
