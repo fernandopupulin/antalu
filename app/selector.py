@@ -121,10 +121,9 @@ STOP_AT_COLLECTION = os.environ.get("BR_STOP_AT_COLLECTION", "1") == "1"
 # test without a run: "1" on, "0" off. For validation: "always" = whenever the test is held,
 # "force" = the test is always held and checked.
 STAGE = os.environ.get("BR_STAGE", "1")
-# CPU seconds (as measured when the stage map was built) that a check may cost for each
-# second that leaving the test out of the answer saves. A check that proves a pass costs CPU
-# for all its tasks; at 1.3 it still pays when a CPU second is charged at 0.6 score seconds.
-STAGE_GAIN = float(os.environ.get("BR_STAGE_GAIN", "1.7"))
+# A speculative stage check spends CPU even when it cannot prove a pass.
+# Budget 0.4 estimated CPU seconds for each second it could save in the worker schedule.
+STAGE_GAIN = float(os.environ.get("BR_STAGE_GAIN", "0.4"))
 STAGE_STATE_SECONDS = 0.6  # the snapshots of the module state for a check that proves a pass
 TEST_TIMEOUT = 4.0  # a test that runs longer than this (and 25 times its usual time) counts as hung
 SETUP_TIMEOUT = 6.0  # a child whose imports take longer than this is stopped
