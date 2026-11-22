@@ -1949,7 +1949,11 @@ def compute_keeps(plan: Plan, maps: Maps, tests):
         return keeps
     if plan.watch:
         return keeps  # whole runs: a part of a test can leave out a write to a watched container
-    code_lines = [(rel, ln) for rel, lines in plan.lines.items() for ln in lines]
+    # Resolve each coverage row once per patch, shared across candidate tests.
+    code_lines = [
+        (maps.unit_entries(rel, ln), (rel, ln) in plan.plain_lines)
+        for rel, lines in plan.lines.items() for ln in lines
+    ]
     fixtures = {}
     for p in plan.files:
         if p.startswith("tests/fixtures/"):
@@ -1967,12 +1971,12 @@ def compute_keeps(plan: Plan, maps: Maps, tests):
         if code_lines:
             seen = False
             whole = False
-            for rel, ln in code_lines:
-                pat = maps.unit_entries(rel, ln).get(n)
+            for entries, unfiltered in code_lines:
+                pat = entries.get(n)
                 if pat is None:
                     continue
                 seen = True
-                plain = cfilter is None or (rel, ln) in plan.plain_lines
+                plain = cfilter is None or unfiltered
                 if pat == BASE_PATTERN:
                     # the always-run part runs the line: the whole test runs, unless that
                     # part creates no object that can read the changed value
@@ -3953,11 +3957,14 @@ def pack(numbers, seconds):
     items = sorted(numbers, key=lambda n: -seconds[n])
     timed_items = [(n, seconds[n]) for n in items]
     longest = timed_items[0][1]
+    total = sum(duration for _, duration in timed_items)
     best = None
     for k in range(1, min(8, len(items)) + 1):
         fee = WORKER_COST * k
         if best is not None and longest + fee >= best[0] - 1e-9:
             break
+        if best is not None and total / k + fee > best[0] + 1e-9:
+            continue
         loads = [0.0] * k
         bins = [[] for _ in range(k)]
         for n, duration in timed_items:
