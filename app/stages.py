@@ -240,6 +240,10 @@ class StageCheck:
         self.over = False
         self.why = None
         self.same = []
+        self.reuse = {}
+        self.reuse_anchors = {}
+        self.reuse_state = self.reuse_alias = None
+        self.reused = []
         self.ran = []  # (task, why it ran to its end)
         self.proved = []
         self.seq = []  # one letter per task, in the order of the test (for the logs)
@@ -390,6 +394,27 @@ class StageCheck:
             return fn(*args, **kwargs)
         if self.over:
             return None  # the test skips a task without a result
+        if self.reuse and index in self.reuse_anchors:
+            expected = self.reuse_anchors[index]
+            if fingerprint((args, kwargs, self.module._schema)) != expected:
+                self.reuse.clear()
+        elif self.reuse:
+            if self.reuse_state is not None:
+                import tpc_scope
+
+                if (not self.reuse_anchors.keys() <= set(self.same)
+                        or tpc_scope.optimizer_state(self.reuse_alias) != self.reuse_state):
+                    self.reuse.clear()
+                self.reuse_state = None
+            expected = self.reuse.get(index)
+            if expected is not None and fingerprint((args, kwargs, self.module._schema)) == expected:
+                self.same.append(index)
+                self.reused.append(index)
+                self.seq.append('c')
+                return None
+            # The certificate covers a prefix. After a different input or an
+            # affected query, use the ordinary proof for every later query.
+            self.reuse.clear()
         # A check that costs far more CPU than the pinned tasks did (the patched code is slow)
         # ends here: it would cost more than it can save.
         now = time.process_time()
@@ -441,7 +466,7 @@ class StageCheck:
         the test runs afterwards with every task, this one too."""
         module = self.module
         index = min((i for i in self.tasks if self.active is None or i in self.active), default=None)
-        if index is None:
+        if index is None or index in self.reuse or index in self.reuse_anchors:
             return True
         try:
             meta, sql = getattr(self.cls, self.record["sqls"])[index][:2]

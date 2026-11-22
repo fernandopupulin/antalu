@@ -2561,6 +2561,15 @@ def run_stage_check(plan: Plan, tests, started, keeps, seen, broken, forced, set
         reduce.STATE.task_hook = check.run_task
         restore_executor = None
         try:
+            if (os.environ.get("BR_TPC_SCOPE", "1") == "1" and plan.mode == "hot"
+                    and not plan.watch and not plan.fpairs and not hasattr(check, "report")
+                    and plan.files and all(p.startswith("sqlglot/optimizer/") for p in plan.files)):
+                import tpc_scope
+
+                if test_id == tpc_scope.TEST_ID:
+                    check.reuse, check.reuse_anchors, check.reuse_state = tpc_scope.reusable_prefix(
+                        os.path.join(MAPS, "tpc_queries.bin"), ROOT, code_pairs, active, check.later)
+                    check.reuse_alias = alias
             # Keep the executor untouched when the patch can change its implementation.
             # Only the late work of this stage verification needs the projection fast path.
             if (os.environ.get("BR_TPC_FUSE", "1") == "1" and plan.files
@@ -2591,7 +2600,8 @@ def run_stage_check(plan: Plan, tests, started, keeps, seen, broken, forced, set
             signal.setitimer(signal.ITIMER_PROF, 0)  # (started() set the CPU limit of the check)
         info["t_run"] = round(time.process_time() - t0, 3)
         info.update(same=len(check.same), ran=[[i, why] for i, why in check.ran[:8]], nran=len(check.ran),
-                    proved=len(check.proved), seq="".join(check.seq), spent=round(check.spent, 3), why=check.why,
+                    proved=len(check.proved), reused=len(check.reused), seq="".join(check.seq),
+                    spent=round(check.spent, 3), why=check.why,
                     run=None if not results else results[0])
         if not results or results[0] is None:
             verdict = None
